@@ -61,7 +61,8 @@ def main():
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--midcap-only", action="store_true")
     p.add_argument("--smallcap-only", action="store_true")
-    p.add_argument("--permissive", action="store_true")
+    p.add_argument("--strict", action="store_true",
+                   help="Missing values fail filters (default: permissive, missing = pass)")
     p.add_argument("--top", type=int, default=50)
     p.add_argument("--output-dir", default="output")
     p.add_argument("--wait-before-technicals", type=int, default=60)
@@ -161,7 +162,7 @@ def main():
                 print("STEP 3: Applying filters")
                 print("=" * 60)
                 try:
-                    filtered = apply_filters(fetched, strict=not args.permissive)
+                    filtered = apply_filters(fetched, strict=args.strict)
                     filtered.to_csv(output_dir / "filtered.csv", index=False)
                     diagnostics["filtered_size"] = len(filtered)
                 except Exception as e:
@@ -172,7 +173,8 @@ def main():
                 if len(filtered) == 0:
                     diagnostics["notes"].append(
                         "Zero candidates passed filters. "
-                        "Try --permissive, or loosen thresholds in src/screen.py."
+                        "Filter is already permissive; likely some parsers broken. "
+                        "Run `python diagnose.py` to see field coverage."
                     )
                     print("WARNING: No candidates passed filters. Report will be empty.")
                 else:

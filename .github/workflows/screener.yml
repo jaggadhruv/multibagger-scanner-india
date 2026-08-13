@@ -10,8 +10,8 @@ on:
         description: 'Limit universe size (blank = full run)'
         required: false
         default: ''
-      permissive:
-        description: 'Permissive mode (include missing data)'
+      strict:
+        description: 'Strict mode (missing = fail; default permissive)'
         required: false
         type: boolean
         default: false
@@ -51,8 +51,8 @@ jobs:
           if [ -n "${{ github.event.inputs.limit }}" ]; then
             ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
           fi
-          if [ "${{ github.event.inputs.permissive }}" = "true" ]; then
-            ARGS="$ARGS --permissive"
+          if [ "${{ github.event.inputs.strict }}" = "true" ]; then
+            ARGS="$ARGS --strict"
           fi
           if [ -n "${{ github.event.inputs.wait_before_technicals }}" ]; then
             ARGS="$ARGS --wait-before-technicals ${{ github.event.inputs.wait_before_technicals }}"

@@ -413,4 +413,42 @@ def fetch_fundamentals(tickers: list[str], **_kwargs) -> pd.DataFrame:
         if _DEBUG_SAVED[0]:
             print(f"\n  First failed response saved to {_DEBUG_PATH} — download the artifact to inspect.")
 
+    # Field coverage — critical diagnostic
+    _print_field_coverage(df)
+
     return df
+
+
+# Fields we expect to see. Coverage below 30% = parser likely broken.
+_EXPECTED_FIELDS = {
+    "top ratios":   ["market_cap_cr", "pe_ratio", "roe", "roce", "current_price"],
+    "shareholding": ["promoter_holding", "promoter_pledge"],
+    "growth rates": ["sales_growth_5y", "profit_growth_5y"],
+    "p&l ratios":   ["operating_margin", "debt_to_equity"],
+}
+
+
+def _print_field_coverage(df: pd.DataFrame) -> None:
+    """Print how many fetched rows have each expected field populated."""
+    successful = df[df["error"].isna()] if "error" in df.columns else df
+    n = len(successful) or 1
+    print("\nField coverage (across successfully-fetched tickers):")
+    any_broken = False
+    for group, fields in _EXPECTED_FIELDS.items():
+        for f in fields:
+            if f not in successful.columns:
+                print(f"  {f:24s} MISSING (parser never wrote this column)")
+                any_broken = True
+                continue
+            present = successful[f].notna().sum()
+            pct = present / n * 100
+            flag = ""
+            if pct < 30:
+                flag = "  <- PARSER LIKELY BROKEN"
+                any_broken = True
+            elif pct < 80:
+                flag = "  <- partial"
+            print(f"  {f:24s} {present:4d}/{n} ({pct:5.1f}%){flag}")
+    if any_broken:
+        print("\n  Some fields have low coverage -> filters requiring them will exclude most rows in strict mode.")
+        print("  Options: run with --permissive, or fix the affected parsers in src/fetch.py.")
