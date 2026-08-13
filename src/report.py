@@ -247,6 +247,7 @@ def generate_html_report(
     fetched_size: int,
     output_path: str | Path,
     top_n: int = 50,
+    diagnostics: dict | None = None,
 ) -> Path:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,42 +255,66 @@ def generate_html_report(
     n_pass = len(scored_df)
     top = scored_df.head(top_n).copy()
     n_rows = len(top)
-    _none = pd.Series([None] * n_rows, index=top.index)
 
-    def _col(name):
-        return top.get(name, _none)
+    # ------------- EMPTY STATE: show diagnostic message instead of table -------------
+    if n_rows == 0:
+        notes = (diagnostics or {}).get("notes", []) if diagnostics else []
+        notes_html = ""
+        if notes:
+            items = "".join(f"<li>{n}</li>" for n in notes)
+            notes_html = f"""
+            <div class="empty-diag" style="background:#fff;border:1px solid #e1e4e8;border-radius:6px;padding:24px;margin:20px 0;">
+                <h2 style="margin-top:0;color:#cb2431;">⚠️ No candidates to display</h2>
+                <p><strong>What happened:</strong></p>
+                <ul>{items}</ul>
+                <p><strong>Next steps to diagnose:</strong></p>
+                <ol>
+                  <li>Download this run's artifact from the GitHub Actions run — contains <code>raw_data.csv</code> with per-ticker <code>error</code> column showing exactly why each fetch failed.</li>
+                  <li>Look for <code>debug_response.html</code> in the artifact — the first blocked response is saved there. If it's a Cloudflare/bot challenge page, screener.in is blocking the GitHub Actions runner IP.</li>
+                  <li>If IP blocking is confirmed: run <code>python main.py</code> locally (from a residential IP), commit the resulting <code>output/scored.csv</code>, then have Actions run with <code>--skip-fundamentals</code> to just do technicals + report.</li>
+                  <li>If parsers came up empty but got valid HTML: screener.in may have changed page structure — update the CSS selectors in <code>src/fetch.py</code>.</li>
+                </ol>
+            </div>
+            """
+        table_html = notes_html or '<div class="empty-diag" style="padding:24px;text-align:center;color:#6a737d;"><h2>No data available for this run.</h2><p>Check GitHub Actions logs for details.</p></div>'
+    else:
+        # ------------- NORMAL PATH: build the table -------------
+        _none = pd.Series([None] * n_rows, index=top.index)
 
-    display = pd.DataFrame({
-        "Rank":         range(1, n_rows + 1),
-        "Symbol":       top["symbol"].apply(_screener_link),
-        "Name":         _col("name").fillna("").astype(str).str.slice(0, 30),
-        "Mkt Cap":      top["market_cap_cr"].apply(_fmt_cr),
-        "MB /10":       top["multibagger_score"].apply(_mb_badge),
-        "Tech /10":     _col("technical_score").apply(_tech_badge),
-        "ST Weekly":    [_supertrend_badge(s, w, "w") for s, w in
-                         zip(_col("supertrend_weekly_signal"), _col("supertrend_weekly_weeks"))],
-        "ST Daily":     [_supertrend_badge(s, d, "d") for s, d in
-                         zip(_col("supertrend_daily_signal"), _col("supertrend_daily_days"))],
-        "Promoter":     _col("promoter_holding").apply(_fmt_pct),
-        "Pledge":       _col("promoter_pledge").apply(_fmt_pledge),
-        "ROE":          _col("roe").apply(_fmt_pct),
-        "ROCE":         _col("roce").apply(_fmt_pct),
-        "5y Sales":     _col("sales_growth_5y").apply(_fmt_pct),
-        "5y Profit":    _col("profit_growth_5y").apply(_fmt_pct),
-        "D/E":          _col("debt_to_equity").apply(_fmt_ratio),
-        "P/E":          _col("pe_ratio").apply(_fmt_ratio),
-        "RSI":          _col("rsi_14").apply(_fmt_rsi),
-        "vs 200MA":     _col("pct_from_200ma").apply(_fmt_pct_signed),
-        "Rationale":    _col("rationale").fillna("—"),
-    })
+        def _col(name):
+            return top.get(name, _none)
 
-    table_html = display.to_html(
-        table_id="results",
-        classes="display compact",
-        index=False,
-        escape=False,
-        border=0,
-    )
+        display = pd.DataFrame({
+            "Rank":         range(1, n_rows + 1),
+            "Symbol":       top["symbol"].apply(_screener_link),
+            "Name":         _col("name").fillna("").astype(str).str.slice(0, 30),
+            "Mkt Cap":      top["market_cap_cr"].apply(_fmt_cr),
+            "MB /10":       top["multibagger_score"].apply(_mb_badge),
+            "Tech /10":     _col("technical_score").apply(_tech_badge),
+            "ST Weekly":    [_supertrend_badge(s, w, "w") for s, w in
+                             zip(_col("supertrend_weekly_signal"), _col("supertrend_weekly_weeks"))],
+            "ST Daily":     [_supertrend_badge(s, d, "d") for s, d in
+                             zip(_col("supertrend_daily_signal"), _col("supertrend_daily_days"))],
+            "Promoter":     _col("promoter_holding").apply(_fmt_pct),
+            "Pledge":       _col("promoter_pledge").apply(_fmt_pledge),
+            "ROE":          _col("roe").apply(_fmt_pct),
+            "ROCE":         _col("roce").apply(_fmt_pct),
+            "5y Sales":     _col("sales_growth_5y").apply(_fmt_pct),
+            "5y Profit":    _col("profit_growth_5y").apply(_fmt_pct),
+            "D/E":          _col("debt_to_equity").apply(_fmt_ratio),
+            "P/E":          _col("pe_ratio").apply(_fmt_ratio),
+            "RSI":          _col("rsi_14").apply(_fmt_rsi),
+            "vs 200MA":     _col("pct_from_200ma").apply(_fmt_pct_signed),
+            "Rationale":    _col("rationale").fillna("—"),
+        })
+
+        table_html = display.to_html(
+            table_id="results",
+            classes="display compact",
+            index=False,
+            escape=False,
+            border=0,
+        )
 
     now = datetime.now(timezone.utc)
     html = HTML_TEMPLATE.format(

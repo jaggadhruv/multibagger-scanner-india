@@ -1,35 +1,44 @@
 """
 Fundamentals fetch from screener.in.
 
-Screener.in is India's most popular equity research site with rich fundamentals
-that are much better suited to Indian markets than yfinance:
-  * Promoter holding % and Pledged % (single most predictive negative signal
-    in Indian small caps — high pledge often precedes stock collapses)
-  * ROCE — the metric of choice for Indian analysts (better than ROA)
-  * Multi-year CAGRs — pre-computed 3y, 5y, 10y compounded growth
-  * Quarterly results with segment breakdown
+Uses curl_cffi (already a yfinance dependency) which impersonates a real
+Chrome browser at the TLS handshake level. Plain `requests` gets blocked
+by screener.in's bot detection from cloud IPs (like GitHub Actions runners)
+because its TLS fingerprint is obviously a Python library.
 
-No official API — we scrape the public company pages. Since we're doing
-one page per company at a polite pace with browser-like headers, this
-works reliably.
+Falls back to standard `requests` if curl_cffi isn't available.
 
-URLs:
-  https://www.screener.in/company/{SYMBOL}/consolidated/   (preferred)
-  https://www.screener.in/company/{SYMBOL}/                (fallback for standalone-only cos.)
+Uses a persistent Session that visits the homepage first to collect any
+anti-bot cookies before hitting company pages.
+
+If everything still fails, saves the first blocked response HTML to
+output/debug_response.html so you can see exactly what screener returned.
 """
 from __future__ import annotations
 import re
 import time
 import warnings
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
 
 warnings.filterwarnings("ignore")
 
+# Try curl_cffi first (browser TLS fingerprint impersonation).
+# Falls back to requests if not installed.
+try:
+    from curl_cffi import requests as http
+    USE_CURL_CFFI = True
+    IMPERSONATE = "chrome120"
+except ImportError:
+    import requests as http
+    USE_CURL_CFFI = False
+    IMPERSONATE = None
+
 BASE_URL = "https://www.screener.in/company"
+HOMEPAGE_URL = "https://www.screener.in/"
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -40,11 +49,45 @@ BROWSER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://www.screener.in/",
     "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
 }
 
-FETCH_DELAY = 0.7  # seconds between scrapes — polite pacing, screener is generous but not unlimited
+FETCH_DELAY = 0.7
+
+# Track diagnostic state so we can save the first blocked response for debugging
+_DEBUG_SAVED = [False]
+_DEBUG_PATH = Path("output/debug_response.html")
+
+
+# ------------------------------------------------------------------ #
+# Session with warm-up
+# ------------------------------------------------------------------ #
+
+def _make_session():
+    """Create session, impersonate a browser if possible, warm up with homepage."""
+    if USE_CURL_CFFI:
+        s = http.Session(impersonate=IMPERSONATE)
+    else:
+        s = http.Session()
+    s.headers.update(BROWSER_HEADERS)
+
+    # Warm-up: hit homepage to collect any cookies (anti-bot, csrf, etc.)
+    try:
+        r = s.get(HOMEPAGE_URL, timeout=20)
+        if USE_CURL_CFFI:
+            print(f"  [fetch] curl_cffi session warmed up (impersonating {IMPERSONATE}), "
+                  f"homepage returned HTTP {r.status_code}")
+        else:
+            print(f"  [fetch] plain requests session (curl_cffi not available), "
+                  f"homepage returned HTTP {r.status_code}")
+    except Exception as e:
+        print(f"  [fetch] session warm-up failed: {e} — proceeding anyway")
+    return s
 
 
 # ------------------------------------------------------------------ #
@@ -55,7 +98,6 @@ _NUM_RE = re.compile(r"-?[\d,]+(?:\.\d+)?")
 
 
 def _to_float(s: str | None) -> float | None:
-    """Parse '₹ 1,234.56 Cr.' or '12.34 %' or '1,23,456' into a float."""
     if s is None:
         return None
     s = str(s).strip()
@@ -71,26 +113,18 @@ def _to_float(s: str | None) -> float | None:
 
 
 def _text(el) -> str:
-    """BeautifulSoup element → clean text."""
     return el.get_text(strip=True) if el else ""
 
 
 # ------------------------------------------------------------------ #
-# Section parsers
+# Section parsers (same as before, unchanged)
 # ------------------------------------------------------------------ #
 
 def _parse_top_ratios(soup: BeautifulSoup) -> dict[str, Any]:
-    """
-    Parse the top-right ratios box on a company page.
-
-    Contains: Market Cap, Current Price, High/Low, Stock P/E, Book Value,
-              Dividend Yield, ROCE, ROE, Face Value
-    """
     out: dict[str, Any] = {}
 
     top = soup.find("ul", id="top-ratios") or soup.find("ul", class_="company-ratios")
     if not top:
-        # Fallback: look for any ul with li>span.name pattern
         for ul in soup.find_all("ul"):
             if ul.find("span", class_="name"):
                 top = ul
@@ -111,7 +145,6 @@ def _parse_top_ratios(soup: BeautifulSoup) -> dict[str, Any]:
         elif "current price" in name:
             out["current_price"] = _to_float(raw_val)
         elif "high" in name and "low" in name:
-            # "High / Low: 1,234 / 987"
             parts = raw_val.split("/")
             if len(parts) == 2:
                 out["high_52w"] = _to_float(parts[0])
@@ -129,7 +162,6 @@ def _parse_top_ratios(soup: BeautifulSoup) -> dict[str, Any]:
         elif "face value" in name:
             out["face_value"] = _to_float(raw_val)
 
-    # Derived: price to book
     if out.get("current_price") and out.get("book_value") and out["book_value"] > 0:
         out["price_to_book"] = round(out["current_price"] / out["book_value"], 2)
 
@@ -137,17 +169,12 @@ def _parse_top_ratios(soup: BeautifulSoup) -> dict[str, Any]:
 
 
 def _parse_shareholding(soup: BeautifulSoup) -> dict[str, Any]:
-    """
-    Parse the Shareholding Pattern table. Grabs the MOST RECENT quarter's values
-    for Promoters, FIIs, DIIs, Public, and (importantly) Pledged percentage.
-    """
     out: dict[str, Any] = {}
 
     section = soup.find("section", id="shareholding")
     if not section:
         return out
 
-    # Grab all quarterly-shareholding tables (there may be two: quarterly + yearly)
     tables = section.find_all("table")
     for table in tables:
         for row in table.find_all("tr"):
@@ -155,7 +182,6 @@ def _parse_shareholding(soup: BeautifulSoup) -> dict[str, Any]:
             if len(cells) < 2:
                 continue
             label = _text(cells[0]).lower()
-            # Last data cell is the most recent quarter
             last_val = _text(cells[-1])
             v = _to_float(last_val)
             if v is None:
@@ -172,24 +198,11 @@ def _parse_shareholding(soup: BeautifulSoup) -> dict[str, Any]:
                 out["public_holding"] = v
             elif "government" in label:
                 out["government_holding"] = v
-
     return out
 
 
 def _parse_growth_rates(soup: BeautifulSoup) -> dict[str, Any]:
-    """
-    Parse the 'Compounded Sales Growth' and 'Compounded Profit Growth' tables.
-
-    These sit in the Analysis section. Each has rows like:
-      10 Years:  18%
-      5 Years:   22%
-      3 Years:   15%
-      TTM:       28%
-    """
     out: dict[str, Any] = {}
-
-    # Look for tables inside the ratios/growth area
-    # Structure: <table><tr><td>Compounded Sales Growth</td></tr>...<tr><td>5 Years:</td><td>22%</td></tr></table>
     for table in soup.find_all("table", class_="ranges-table"):
         header = _text(table.find("th") or table.find("td")).lower()
         if "sales" in header or "revenue" in header:
@@ -203,7 +216,7 @@ def _parse_growth_rates(soup: BeautifulSoup) -> dict[str, Any]:
         else:
             continue
 
-        for row in table.find_all("tr")[1:]:  # skip header row
+        for row in table.find_all("tr")[1:]:
             cells = row.find_all("td")
             if len(cells) < 2:
                 continue
@@ -219,17 +232,11 @@ def _parse_growth_rates(soup: BeautifulSoup) -> dict[str, Any]:
                 out[f"{prefix}_3y"] = val
             elif "ttm" in label:
                 out[f"{prefix}_ttm"] = val
-
     return out
 
 
 def _parse_pl_ratios(soup: BeautifulSoup) -> dict[str, Any]:
-    """
-    Pull OPM (Operating Profit Margin) and debt/equity from tables.
-    OPM is in the Profit & Loss table, D/E in the Ratios table.
-    """
     out: dict[str, Any] = {}
-
     for section_id in ["profit-loss", "ratios", "balance-sheet"]:
         section = soup.find("section", id=section_id)
         if not section:
@@ -239,7 +246,6 @@ def _parse_pl_ratios(soup: BeautifulSoup) -> dict[str, Any]:
             if len(cells) < 2:
                 continue
             label = _text(cells[0]).lower().strip()
-            # Take the most recent (last) column value
             last_val = _text(cells[-1])
             v = _to_float(last_val)
             if v is None:
@@ -251,36 +257,67 @@ def _parse_pl_ratios(soup: BeautifulSoup) -> dict[str, Any]:
             elif label == "debt / equity" or label == "debt to equity":
                 out["debt_to_equity"] = v
             elif label == "roce %":
-                # Latest year ROCE (top-ratios has 3y avg; this is current)
                 out["roce_latest"] = v
             elif label == "roe %":
                 out["roe_latest"] = v
-
     return out
 
 
 # ------------------------------------------------------------------ #
-# Main per-ticker scraper
+# Per-ticker scraper (uses shared session)
 # ------------------------------------------------------------------ #
 
-def _fetch_html(symbol: str, retries: int = 1) -> tuple[str | None, str]:
-    """Try consolidated URL first, then standalone. Returns (html, error)."""
+def _save_debug_response(html: str, symbol: str, reason: str):
+    """Save the first blocked/failed response so we can inspect what screener returned."""
+    if _DEBUG_SAVED[0]:
+        return
+    try:
+        _DEBUG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        header = (
+            f"<!-- DEBUG: response for {symbol} was rejected ({reason})\n"
+            f"     saved for inspection. If this is a Cloudflare/bot challenge page,\n"
+            f"     screener.in is blocking this runner's IP. -->\n"
+        )
+        _DEBUG_PATH.write_text(header + html[:20000], encoding="utf-8")
+        _DEBUG_SAVED[0] = True
+        print(f"  [fetch] saved first failed response to {_DEBUG_PATH}")
+    except Exception:
+        pass
+
+
+def _fetch_html(session, symbol: str, retries: int = 1) -> tuple[str | None, str]:
+    """Try consolidated URL first, then standalone."""
     last_err = "unknown"
     for suffix in ("consolidated/", ""):
         url = f"{BASE_URL}/{symbol}/{suffix}"
         for attempt in range(retries + 1):
             try:
-                r = requests.get(url, headers=BROWSER_HEADERS, timeout=25)
+                if USE_CURL_CFFI:
+                    r = session.get(url, timeout=25, impersonate=IMPERSONATE)
+                else:
+                    r = session.get(url, timeout=25)
                 if r.status_code == 200:
-                    return r.text, ""
+                    text = r.text
+                    # Check if the response is actually a company page vs a challenge/error page
+                    if "top-ratios" not in text and "company-ratios" not in text and "shareholding" not in text.lower():
+                        preview = text[:300].replace("\n", " ")
+                        last_err = f"HTTP 200 but not a company page (likely blocked). Snippet: {preview}"
+                        _save_debug_response(text, symbol, "no company-page markers found")
+                        break  # try next suffix
+                    return text, ""
                 if r.status_code == 404:
                     last_err = f"404 (page not found for {suffix or 'standalone'})"
-                    break  # try next suffix
+                    break
                 if r.status_code == 429:
-                    last_err = f"429 rate limited"
+                    last_err = "429 rate limited"
                     if attempt < retries:
                         time.sleep(10)
                         continue
+                if r.status_code in (403, 503):
+                    preview = r.text[:200].replace("\n", " ")
+                    last_err = f"HTTP {r.status_code} (blocked). Snippet: {preview}"
+                    _save_debug_response(r.text, symbol, f"HTTP {r.status_code}")
+                    break
                 last_err = f"HTTP {r.status_code}"
             except Exception as e:
                 last_err = f"{type(e).__name__}: {str(e)[:80]}"
@@ -290,14 +327,11 @@ def _fetch_html(symbol: str, retries: int = 1) -> tuple[str | None, str]:
     return None, last_err
 
 
-def scrape_screener(symbol: str) -> dict[str, Any]:
-    """
-    Scrape screener.in for one company. Returns a dict with all fields
-    we could extract, plus 'symbol' and 'error' (None on success).
-    """
+def scrape_screener(session, symbol: str) -> dict[str, Any]:
+    """Scrape screener.in for one company using shared session."""
     result: dict[str, Any] = {"symbol": symbol, "error": None}
 
-    html, err = _fetch_html(symbol)
+    html, err = _fetch_html(session, symbol)
     if html is None:
         result["error"] = err
         return result
@@ -308,17 +342,14 @@ def scrape_screener(symbol: str) -> dict[str, Any]:
         result["error"] = f"parse: {type(e).__name__}: {e}"
         return result
 
-    # Company name (used for display)
     h1 = soup.find("h1")
     if h1:
         result["name"] = _text(h1)
 
-    # Sector / industry — screener has this in a breadcrumb-like element
     company_info = soup.find("p", class_="sub")
     if company_info:
         result["sector"] = _text(company_info)
 
-    # Merge all section parsers
     try:
         result.update(_parse_top_ratios(soup))
     except Exception as e:
@@ -339,7 +370,6 @@ def scrape_screener(symbol: str) -> dict[str, Any]:
     except Exception as e:
         result["pl_parse_error"] = f"{type(e).__name__}: {e}"
 
-    # Sanity check: did we get anything useful?
     if not result.get("market_cap_cr") and not result.get("pe_ratio"):
         result["error"] = "no core fields extracted (page structure may have changed)"
 
@@ -347,29 +377,26 @@ def scrape_screener(symbol: str) -> dict[str, Any]:
 
 
 def fetch_fundamentals(tickers: list[str], **_kwargs) -> pd.DataFrame:
-    """
-    Scrape screener.in for a list of tickers sequentially with polite delays.
-
-    Sequential (not parallel) — same reason as US technicals: screener may
-    rate-limit or IP-ban aggressive scrapers. ~0.7s/ticker means 400 tickers
-    in ~5 min. Acceptable.
-    """
+    """Sequential screener.in scrape with warmed-up shared session."""
     n = len(tickers)
     print(f"Scraping screener.in for {n} tickers (sequential, {FETCH_DELAY}s delay)")
+    print(f"  HTTP library: {'curl_cffi (browser TLS impersonation)' if USE_CURL_CFFI else 'requests (plain)'}")
+
+    session = _make_session()
 
     results: list[dict[str, Any]] = []
     t0 = time.time()
 
     for i, ticker in enumerate(tickers, 1):
-        row = scrape_screener(ticker)
+        row = scrape_screener(session, ticker)
         results.append(row)
 
-        if i % 25 == 0 or i == n:
+        if i % 25 == 0 or i == n or (i <= 5):  # more frequent early progress for debugging
             elapsed = time.time() - t0
             rate = i / elapsed if elapsed else 0
             eta = (n - i) / rate if rate else 0
             n_ok_so_far = sum(1 for r in results if r["error"] is None)
-            print(f"  {i}/{n} · ok={n_ok_so_far} · {elapsed:.0f}s · ETA {eta:.0f}s")
+            print(f"  {i}/{n} · ok={n_ok_so_far} · last={ticker!r} err={results[-1].get('error', 'ok')!r:.80s} · {elapsed:.0f}s · ETA {eta:.0f}s")
 
         if i < n:
             time.sleep(FETCH_DELAY)
@@ -382,6 +409,8 @@ def fetch_fundamentals(tickers: list[str], **_kwargs) -> pd.DataFrame:
         errs = df[df["error"].notna()]["error"]
         print("Top error types:")
         for err, count in errs.value_counts().head(3).items():
-            print(f"  ({count}x) {err[:140]}")
+            print(f"  ({count}x) {err[:200]}")
+        if _DEBUG_SAVED[0]:
+            print(f"\n  First failed response saved to {_DEBUG_PATH} — download the artifact to inspect.")
 
     return df
