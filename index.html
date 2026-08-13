@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>India Multibagger Screener — 2026-08-13</title>
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+<style>
+  :root {
+    --bg: #fafbfc; --card: #ffffff; --border: #e1e4e8;
+    --text: #24292e; --muted: #6a737d; --accent: #ff6b00;
+    --good: #22863a; --warn: #b08800; --bad: #cb2431;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    margin: 0 auto; padding: 24px; max-width: 1900px;
+  }
+  header { margin-bottom: 24px; }
+  h1 { margin: 0 0 4px; font-size: 24px; }
+  .flag { display: inline-block; padding: 2px 8px; background: #ff9933; color: #fff;
+           border-radius: 3px; font-size: 12px; margin-right: 8px; vertical-align: middle; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .cards {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px; margin: 20px 0;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px 16px;
+  }
+  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .criteria {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px;
+    line-height: 1.6;
+  }
+  .criteria strong { color: var(--accent); }
+  table.dataTable {
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    font-size: 12.5px; width: 100% !important;
+  }
+  table.dataTable thead th {
+    background: #f6f8fa; border-bottom: 2px solid var(--border);
+    padding: 10px 8px; font-weight: 600; color: var(--text);
+  }
+  table.dataTable tbody td { padding: 8px; border-bottom: 1px solid #eef1f4; vertical-align: top; }
+  table.dataTable tbody tr:hover { background: #f6f8fa; }
+  .rank { font-weight: 600; color: var(--muted); text-align: center; }
+  .ticker a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .ticker a:hover { text-decoration: underline; }
+  .rationale { font-size: 12px; color: #444; max-width: 340px; line-height: 1.4; }
+  .pos { color: var(--good); }
+  .neg { color: var(--bad); }
+
+  .score-badge {
+    display: inline-block; min-width: 40px; padding: 4px 8px;
+    border-radius: 12px; font-weight: 700; font-size: 13px;
+    text-align: center; color: white;
+  }
+  .mb-elite    { background: #22863a; }
+  .mb-strong   { background: #2f9e5c; }
+  .mb-good     { background: #7cb342; color: #1a3d0a; }
+  .mb-fair     { background: #f0c040; color: #4a3800; }
+  .mb-marginal { background: #e0a040; color: #4a2800; }
+  .tech-great  { background: #22863a; }
+  .tech-good   { background: #7cb342; color: #1a3d0a; }
+  .tech-neutral{ background: #f0c040; color: #4a3800; }
+  .tech-weak   { background: #e0a040; color: #4a2800; }
+  .tech-bad    { background: var(--bad); }
+
+  .signal {
+    display: inline-block; padding: 3px 10px; border-radius: 4px;
+    font-weight: 700; font-size: 12px; letter-spacing: 0.5px;
+  }
+  .signal-buy  { background: #d4edda; color: #155724; border: 1px solid #22863a; }
+  .signal-sell { background: #f8d7da; color: #721c24; border: 1px solid var(--bad); }
+  .signal-days { display: block; font-size: 10px; color: var(--muted); margin-top: 2px; font-weight: 400; }
+
+  .pledge-bad  { color: var(--bad); font-weight: 600; }
+  .pledge-warn { color: var(--warn); font-weight: 500; }
+  .pledge-ok   { color: var(--good); }
+
+  footer {
+    margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 12px;
+  }
+  footer .disclaimer {
+    background: #fff8e1; border-left: 3px solid var(--warn);
+    padding: 10px 14px; margin: 12px 0; color: #5c4a00;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="flag">🇮🇳 India</span>Multibagger Candidate Screener</h1>
+  <div class="meta">Generated 2026-08-13 20:40 UTC · Fundamentals: screener.in · Prices: Yahoo Finance (.NS)</div>
+</header>
+
+<div class="cards">
+  <div class="card"><div class="label">Universe scanned</div><div class="value">400</div></div>
+  <div class="card"><div class="label">Data fetched</div><div class="value">373</div></div>
+  <div class="card"><div class="label">Passed filters</div><div class="value">0</div></div>
+  <div class="card"><div class="label">Shown in table</div><div class="value">0</div></div>
+</div>
+
+<div class="criteria">
+<strong>Universe</strong>: Nifty Midcap 150 + Nifty Smallcap 250 (~400 tickers).<br>
+<strong>Hard filters</strong>: Market cap ₹1,000–40,000 Cr · ROE ≥15% · ROCE ≥15% · OPM ≥10% · 5y sales/profit growth ≥10% · D/E ≤1.0 · Promoter holding ≥30% · Promoter pledge ≤10%.<br>
+<strong>Multibagger Score (0-10, fundamental)</strong>: Quality (30%) + Health (25%) + Growth (20%) + <em>Promoter (15%)</em> + Valuation (10%). The Promoter factor is India-specific: high stable promoter holding + low pledge is the single best positive governance signal.<br>
+<strong>Technical Score (0-10)</strong>: RSI 40-60 sweet spot + 5-20% above 200MA + 10-25% pullback from 52w high. Higher = better entry point.<br>
+<strong>Supertrend (ATR period=10, mult=2.5)</strong>: <span class="signal signal-buy">BUY</span> = price above trend line; <span class="signal signal-sell">SELL</span> = price below.<br>
+&nbsp;&nbsp;&nbsp;&nbsp;• <strong>ST Weekly</strong> — long-term trend (primary signal for multibagger holds)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;• <strong>ST Daily</strong> — short-term signal (entry-timing color)
+</div>
+
+
+            <div class="empty-diag" style="background:#fff;border:1px solid #e1e4e8;border-radius:6px;padding:24px;margin:20px 0;">
+                <h2 style="margin-top:0;color:#cb2431;">⚠️ No candidates to display</h2>
+                <p><strong>What happened:</strong></p>
+                <ul><li>Zero candidates passed filters. Try --permissive, or loosen thresholds in src/screen.py.</li></ul>
+                <p><strong>Next steps to diagnose:</strong></p>
+                <ol>
+                  <li>Download this run's artifact from the GitHub Actions run — contains <code>raw_data.csv</code> with per-ticker <code>error</code> column showing exactly why each fetch failed.</li>
+                  <li>Look for <code>debug_response.html</code> in the artifact — the first blocked response is saved there. If it's a Cloudflare/bot challenge page, screener.in is blocking the GitHub Actions runner IP.</li>
+                  <li>If IP blocking is confirmed: run <code>python main.py</code> locally (from a residential IP), commit the resulting <code>output/scored.csv</code>, then have Actions run with <code>--skip-fundamentals</code> to just do technicals + report.</li>
+                  <li>If parsers came up empty but got valid HTML: screener.in may have changed page structure — update the CSS selectors in <code>src/fetch.py</code>.</li>
+                </ol>
+            </div>
+            
+
+<footer>
+  <div class="disclaimer">
+    <strong>Not investment advice.</strong> This screener is a candidate generator, not a buy list. Indian small caps in particular carry governance risks that no fundamental screen can fully capture — always cross-check auditor changes, related-party transactions, and management background before acting on any name. Data quality from screener.in is generally excellent but not guaranteed.
+  </div>
+  <div>Fundamentals: screener.in · Prices: Yahoo Finance · Universe: NSE Nifty indices</div>
+</footer>
+
+<script>
+$(document).ready(function() {
+    $('#results').DataTable({
+        pageLength: 25,
+        order: [[0, 'asc']],
+        columnDefs: [
+            { targets: 0, className: 'rank' },
+            { targets: -1, className: 'rationale' },
+        ]
+    });
+});
+</script>
+</body>
+</html>
