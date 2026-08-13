@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.env
+*.egg-info/
+.pytest_cache/
+
+# Output (regenerated each run)
+output/*.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
