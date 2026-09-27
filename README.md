@@ -1,3 +1,5 @@
+Website: https://jaggadhruv.github.io/multibagger-scanner-india/
+
 # 🇮🇳 India Multibagger Screener
 
 Factor-based screener that ranks Indian mid- and small-cap stocks (NSE Nifty
