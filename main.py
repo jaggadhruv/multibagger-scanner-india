@@ -55,6 +55,9 @@ def main() -> None:
         print("ERROR: no tickers. The NSE index files could not be read; try again or add input/universe.csv")
         sys.exit(1)
     cfg.UNIVERSE_NAME = described
+    if "saved list" in described:
+        health["notes"].append("NSE refused the index download from this machine, so the saved copy of the index lists "
+                               "in data/universe_snapshot.csv was used. It is refreshed whenever the download works.")
     if not args.sample and described.startswith("Nifty") and len(universe) < 350:
         health["warnings"].append(f"Only {len(universe)} tickers were read from NSE (about 400 expected). "
                                   "One of the two index files probably failed to load.")

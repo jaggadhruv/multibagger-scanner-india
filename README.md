@@ -71,7 +71,7 @@ record of every earlier tier A pick against the index.
 
 ```bash
 pip install -r requirements.txt
-python -m tests.test_offline     # 11 offline tests, about 5 seconds, no network
+python -m tests.test_offline     # 13 offline tests, about 5 seconds, no network
 python main.py --sample          # 12 tickers, checks the live data path
 python main.py                   # full run, about 400 pages, 10 to 12 minutes
 ```
@@ -94,10 +94,20 @@ can be compared with its screener.in page by eye. If screener.in refuses the
 requests altogether, the run stops after 10 pages, says so in the report, and saves
 the response it received to `output/debug_response.html`.
 
+## Where the index lists come from
+
+NSE refuses downloads from many cloud servers, GitHub Actions included. The run
+tries three addresses for each index list and, if all refuse, uses the saved copy
+in `data/universe_snapshot.csv` (400 companies, taken on 2026-11-16). The report
+says when the saved copy was used. Whenever a download works, the saved copy is
+refreshed and committed back. The indices are rebalanced twice a year (March and
+September), so a saved copy that is a few months old misses only a handful of names.
+To use a different list altogether, save NSE symbols as `input/universe.csv`.
+
 ## GitHub Actions
 
 `.github/workflows/screener.yml` runs every Saturday 06:00 UTC and on demand.
-It commits `data/picks_log.csv` back to the repository and publishes `output/` to
+It commits `data/` (picks log, index lists) back to the repository and publishes `output/` to
 GitHub Pages. It needs **Settings > Actions > General > Workflow permissions >
 Read and write**, which the previous version already required.
 
@@ -125,7 +135,7 @@ src/tracklog.py         picks log and performance against the index
 src/pipeline.py         ties the steps together, writes CSVs
 src/report.py           HTML report
 tests/                  offline tests with a fake screener.in page and fake Yahoo
-data/                   picks_log.csv (tracked in git)
+data/                   picks_log.csv, universe_snapshot.csv (tracked in git)
 output/                 index.html, all_companies.csv, shortlist.csv, raw_pages.csv
 ```
 

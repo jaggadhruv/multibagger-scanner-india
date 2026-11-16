@@ -131,6 +131,43 @@ def test_industry_exclusions():
 
 
 # ------------------------------------------------------------------ #
+# Universe sources
+# ------------------------------------------------------------------ #
+
+def test_saved_index_lists_are_used_when_nse_refuses():
+    from src import universe
+    with patch.object(universe, "_download", lambda url: None), patch.object(universe, "SNAPSHOT", ROOT / "data" / "universe_snapshot.csv"), \
+            patch.object(universe, "CUSTOM_UNIVERSE", Path("no-such-file.csv")), contextlib.redirect_stdout(io.StringIO()):
+        rows, described = universe.get_universe()
+    assert len(rows) == 400 and "saved list of" in described
+    tickers = {r["ticker"] for r in rows}
+    assert {"ASTRAL", "PERSISTENT", "KPITTECH", "M&MFIN"} <= tickers and not any(t.startswith("DUMMY") for t in tickers)
+    in_scope = [r for r in rows if not exclusion_reason(r["sector"], "", cfg)]
+    assert 250 < len(in_scope) < 320                                    # lenders, metals, oil and gas, realty removed
+    assert all(r["sector"] != "Financial Services" for r in in_scope)
+
+
+def test_live_index_download_refreshes_the_saved_copy():
+    from src import universe
+
+    def fake_download(url):
+        if "nsearchives" in url:
+            return "<html>Access Denied</html>"                         # first address blocked, second one works
+        n = 150 if "midcap150" in url else 250
+        tag = "M" if n == 150 else "S"
+        lines = [f"Company {tag}{i} Ltd.,Capital Goods,{tag}SYM{i},EQ,INE{i:06d}" for i in range(n)]
+        return "Company Name,Industry,Symbol,Series,ISIN Code\n" + "\n".join(lines) + "\nDummy X Ltd.,Capital Goods,DUMMYX,EQ,DUM1\n"
+
+    with tempfile.TemporaryDirectory() as tmp, patch.object(universe, "_download", fake_download), \
+            patch.object(universe, "SNAPSHOT", Path(tmp) / "snap.csv"), \
+            patch.object(universe, "CUSTOM_UNIVERSE", Path("no-such-file.csv")), contextlib.redirect_stdout(io.StringIO()):
+        rows, described = universe.get_universe()
+        assert len(rows) == 400 and described == "Nifty Midcap 150 + Smallcap 250"
+        saved = pd.read_csv(Path(tmp) / "snap.csv")
+        assert list(saved.columns) == ["Index", "Company Name", "Industry", "Symbol", "As Of"] and len(saved) == 402
+
+
+# ------------------------------------------------------------------ #
 # One full run, universe to report
 # ------------------------------------------------------------------ #
 
