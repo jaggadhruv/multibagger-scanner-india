@@ -1,207 +1,148 @@
-Website: https://jaggadhruv.github.io/multibagger-scanner-india/
+# India Multibagger Shortlist
 
-# 🇮🇳 India Multibagger Screener
+A weekly screen of Indian mid and small caps that returns a short list, not a ranking.
+A stock is shown only if it clears a fixed 12-point checklist: a business that has
+already proven itself, is still inflecting, and whose chart is confirming it.
 
-Factor-based screener that ranks Indian mid- and small-cap stocks (NSE Nifty
-Midcap 150 + Smallcap 250) by their fit to a multibagger profile — with
-India-specific quality signals (**promoter holding, promoter pledge**) that
-matter far more here than in US markets.
+Fundamentals come from screener.in company pages, prices from Yahoo Finance (`.NS`).
+Free data only, no API keys, no secrets.
 
-**Free**. No paid APIs. Runs locally and on GitHub Actions.
+## What changed from the old version
 
----
+| Old | New |
+|---|---|
+| Scored stocks against each other, so someone always got 10/10 | Every check is a fixed yes or no. Zero stocks in a week is a valid result |
+| Missing data counted as a pass | Missing data counts as not met, and is reported loudly |
+| Filters on debt/equity and pledge, which the page does not show | Debt/equity is computed from the balance sheet; pledge is read from the page's Cons list |
+| Parser tied to page layout | Tables are recognised by their row labels |
+| Chart data shown but ignored in ranking | Chart is a gate. No uptrend, no tier A |
+| No record of results | Every pick is logged and measured against the Nifty 50 |
 
-## What this does
+The old version returned an empty list in strict mode because two of its filters
+(debt/equity and promoter pledge) looked for fields that do not exist on the public
+screener.in page, so every company failed them.
 
-1. **Universe** — Fetches ~400 tickers from NSE Nifty Midcap 150 + Nifty Smallcap 250 (excludes Nifty 50 large caps which are too big to plausibly 10x).
-2. **Fundamentals** — Scrapes [screener.in](https://www.screener.in) for each ticker — the site of choice for Indian equity analysis. Extracts:
-   - Financial ratios (P/E, ROE, ROCE, D/E, OPM, book value)
-   - Multi-year growth (5y / 3y / TTM CAGRs for sales & profit)
-   - **Shareholding pattern** (promoter %, pledged %, FII, DII)
-3. **Filter** — India-specific hard filters (see below).
-4. **Multibagger Score (0-10)** — weighted composite with an India-specific **Promoter** factor.
-5. **Cooldown** — 60s pause to let Yahoo rate limits reset before phase 2.
-6. **Technicals** — Fetches 3 years of daily price history via yfinance (with `.NS` suffix), computes:
-   - RSI (14-day)
-   - 50/200-day moving averages
-   - Supertrend on both **daily** and **weekly** candles (BUY / SELL signals)
-   - Technical Score (0-10) — "how good is this entry point?"
-7. **HTML report** — interactive sortable table published to GitHub Pages.
+## The checklist
 
----
+**Gate 1, proven business** (all seven required)
 
-## Why India needs its own screener
+1. Sales growth of 15%+ a year over 3 years
+2. Sales up in each of the last 3 years
+3. ROCE of 20%+, 3-year average
+4. Operating cash flow positive in at least 3 of the last 4 years
+5. Operating cash flow at least 70% of net profit over 3 years
+6. Borrowings no more than 0.6x shareholders' funds
+7. Promoters hold 30%+, have not sold more than 3 points in a year, no pledge above 5% flagged
 
-The multibagger factor model that works for US large-caps doesn't fit
-Indian mid/small caps well. Three big differences:
+**Gate 2, early / inflecting** (both required)
 
-| Factor | US screener | India screener |
-|--------|-------------|-----------------|
-| Governance | Not really needed | **Critical** — promoter pledge/holding is the #1 predictor of both blowups AND compounders |
-| Valuation weight | 15% | 10% (Indian growth stocks routinely trade at high P/Es) |
-| Quality bar | ROE ≥12% | ROE ≥15% + ROCE ≥15% (wider dispersion, filter harder) |
-| Debt tolerance | D/E ≤1.5 | D/E ≤1.0 (Indian debt-fuelled collapses are more common) |
-| Data source | yfinance | **screener.in** (better fundamentals + governance data) |
+8. Operating margin higher than 3 years ago, and not rolling over
+9. Growth holding up: latest year and latest quarter not fading
 
----
+**Gate 3, chart strength** (all three required, two routes)
 
-## Quick start (local)
+10. Weekly Supertrend on BUY
+11. Price above the 200-day average
+12. Beating the Nifty 50
 
-Python 3.10+ required.
+A weekly BUY that is 12 weeks old or less is treated as **emerging**: it needs the
+price above the 200-day average and a 3-month lead over the index. An older BUY is
+**established** and must meet a stricter test: a rising 200-day average, within 15%
+of the 52-week high, ahead of the index over both 6 and 12 months.
+
+Size band: market cap between ₹1,000 Cr and ₹40,000 Cr.
+
+Excluded up front: financial services, metals and mining, oil and gas, realty.
+The checklist's ratios do not fit lenders, and commodity businesses look like
+growth stocks at the top of a price cycle.
+
+## What the report shows
+
+| Tier | Meaning |
+|---|---|
+| **A, Actionable now** | Passes all 12 checks |
+| **B, Watchlist** | Business passes gates 1 and 2, chart not ready. Shows exactly what the chart lacks |
+| **C, Bench** (collapsed) | Proven business that is not inflecting right now |
+
+Below the tiers: a funnel showing how many stocks pass each check, and a track
+record of every earlier tier A pick against the index.
+
+## Running it
 
 ```bash
-git clone https://github.com/<your-username>/multibagger-screener-india.git
-cd multibagger-screener-india
-
-python -m venv .venv
-source .venv/bin/activate    # macOS/Linux
-# .venv\Scripts\activate     # Windows
-
 pip install -r requirements.txt
-
-# Smoke test (~20 tickers, ~90 seconds)
-python main.py --sample
-
-# Open the report
-open output/index.html       # macOS
-start output/index.html      # Windows
+python -m tests.test_offline     # 11 offline tests, about 5 seconds, no network
+python main.py --sample          # 12 tickers, checks the live data path
+python main.py                   # full run, about 400 pages, 10 to 12 minutes
 ```
 
-If the sample works, do a real run:
+## Checking the parser against the site
 
-```bash
-python main.py --limit 100   # ~4 min
-python main.py               # full ~400 tickers, 10-15 min
-```
-
----
-
-## CLI flags
-
-| Flag | Purpose |
-|------|---------|
-| `--sample` | ~20 hand-picked tickers, useful for smoke tests |
-| `--limit N` | First N tickers of the universe (for iteration) |
-| `--midcap-only` | Only Nifty Midcap 150 |
-| `--smallcap-only` | Only Nifty Smallcap 250 |
-| `--permissive` | Include rows with missing data |
-| `--top N` | Show top N in HTML report (default 50) |
-| `--wait-before-technicals N` | Cooldown seconds before technicals (default 60) |
-| `--skip-fundamentals` | Reuse cached scored.csv (retry technicals only) |
-| `--skip-technicals` | Fundamentals-only report |
-
----
-
-## Project layout
+Every run prints how many pages yielded each field:
 
 ```
-multibagger-screener-india/
-├── main.py                     # Entry point
-├── requirements.txt
-├── README.md
-├── src/
-│   ├── universe.py             # NSE index constituents
-│   ├── fetch.py                # screener.in scraping
-│   ├── screen.py               # Filters (India-specific)
-│   ├── score.py                # Multibagger scoring + rationale
-│   ├── technicals.py           # yfinance (.NS) + Supertrend
-│   ├── supertrend.py           # Indicator math
-│   └── report.py               # HTML (₹/Cr formatting)
-├── .github/workflows/
-│   └── screener.yml            # Weekly automated run
-└── output/                     # Generated CSVs + index.html
+What the pages yielded (318 usable of 331):
+  4 years of sales          318
+  operating cash flow       314
+  ROCE                      316
+  ...
 ```
 
----
+A line marked `LOW` means the parser no longer matches the site for that field.
+`output/raw_pages.csv` holds exactly what was read from each page, so any company
+can be compared with its screener.in page by eye. If screener.in refuses the
+requests altogether, the run stops after 10 pages, says so in the report, and saves
+the response it received to `output/debug_response.html`.
 
-## Filters (edit in `src/screen.py`)
+## GitHub Actions
 
-```python
-DEFAULT_FILTERS = {
-    "market_cap_min_cr": 1_000,        # ₹1,000 Cr (~$120M)
-    "market_cap_max_cr": 40_000,       # ₹40,000 Cr (~$4.8B)
-    "roe_min": 15.0,                   # 15% ROE
-    "roce_min": 15.0,                  # 15% ROCE
-    "operating_margin_min": 10.0,      # 10% OPM
-    "sales_growth_5y_min": 10.0,       # 10% CAGR sales
-    "profit_growth_5y_min": 10.0,      # 10% CAGR profit
-    "debt_to_equity_max": 1.0,
-    "promoter_holding_min": 30.0,      # 30% promoter stake
-    "promoter_pledge_max": 10.0,       # <10% pledge (0 is ideal)
-}
+`.github/workflows/screener.yml` runs every Saturday 06:00 UTC and on demand.
+It commits `data/picks_log.csv` back to the repository and publishes `output/` to
+GitHub Pages. It needs **Settings > Actions > General > Workflow permissions >
+Read and write**, which the previous version already required.
+
+## Tuning
+
+Every threshold is in `config.py`. The funnel in the report shows which check
+removes the most stocks.
+
+- `PROMOTER_HOLDING_MIN = 0` admits professionally run companies with no promoter.
+- `ROC_MIN` is 20 because ROCE is a pre-tax figure; it is the same bar as the 15%
+  after-tax return used in the US screener.
+- To screen a different list, save NSE symbols as `input/universe.csv`.
+
+## Files
+
+```
+main.py                 entry point
+config.py               every threshold
+src/universe.py         NSE index lists, industry exclusions
+src/fundamentals.py     screener.in fetch and parser, market-specific checks 6 and 7
+src/checklist.py        the 12 checks, gates and tiers
+src/chart.py            prices, 200-day average, relative strength, Supertrend
+src/supertrend.py       the Supertrend indicator
+src/tracklog.py         picks log and performance against the index
+src/pipeline.py         ties the steps together, writes CSVs
+src/report.py           HTML report
+tests/                  offline tests with a fake screener.in page and fake Yahoo
+data/                   picks_log.csv (tracked in git)
+output/                 index.html, all_companies.csv, shortlist.csv, raw_pages.csv
 ```
 
-## Scoring weights (edit in `src/score.py`)
+Files from the old version that are no longer used and can be deleted:
+`src/fetch.py`, `src/screen.py`, `src/score.py`, `src/technicals.py`, `diagnose.py`.
 
-```python
-DEFAULT_WEIGHTS = {
-    "quality":   0.30,   # ROE, ROCE, OPM, profit margin
-    "health":    0.25,   # Debt/Equity (inverse)
-    "growth":    0.20,   # Multi-year CAGRs
-    "promoter":  0.15,   # India-specific: holding - pledge
-    "valuation": 0.10,   # P/E, P/B (inverse — lower is better)
-}
-```
+## Limits
 
----
+- **Not validated.** No backtest stands behind these thresholds. The track record
+  in the report is the evidence, and it needs months and dozens of picks to mean anything.
+- **Pledge data is partial.** screener.in mentions a pledge only when it considers it
+  material. No mention is treated as no pledge, which is not the same as zero.
+- **screener.in has no official API.** Pages are read one at a time with a pause.
+  A site redesign can break fields; the coverage table above is there to show it.
+- **Governance is only partly captured.** Auditor changes, related-party dealings and
+  management history need a manual check before acting on any name.
+- **The picks log holds the screener's picks only.** It never contains your own
+  trades or positions.
 
-## How to read the report
-
-Each candidate gets three independent signals:
-
-**Multibagger Score (0-10)** — fundamental quality. Higher = better multibagger candidate.
-
-**Technical Score (0-10)** — entry-point quality. High MB + high Tech = ready to buy. High MB + low Tech = great business but overextended, wait.
-
-**Supertrend (Weekly + Daily)** — trend confirmation:
-
-| Weekly | Daily | Setup |
-|--------|-------|-------|
-| 🟢 BUY (30w) | 🟢 BUY (12d) | Strongest — all timeframes aligned bullish |
-| 🟢 BUY (28w) | 🔴 SELL (2d) | Pullback in uptrend — possible entry |
-| 🔴 SELL (8w) | 🟢 BUY (5d) | Dead-cat bounce risk — be cautious |
-| 🔴 SELL | 🔴 SELL | Avoid — all timeframes bearish |
-
-The **Promoter** column shows total promoter holding %. Higher is better (aligned interests).
-
-The **Pledge** column shows promoter pledge %. Zero is ideal; >10% is a warning; >20% is a red flag.
-
----
-
-## Pushing to GitHub + enabling Pages
-
-```bash
-git init
-git add .
-git commit -m "Initial India multibagger screener"
-git branch -M main
-git remote add origin https://github.com/<your-username>/multibagger-screener-india.git
-git push -u origin main
-```
-
-Then:
-
-1. **Settings → Actions → General → Workflow permissions → Read and write permissions** → Save
-2. Trigger a run: **Actions → Weekly Multibagger Screener (India) → Run workflow** with `limit: 50` for a quick test.
-3. Wait for it to finish. This creates the `gh-pages` branch.
-4. **Settings → Pages → Source: Deploy from a branch → Branch: `gh-pages` / `/ (root)`** → Save.
-5. Report lives at `https://<your-username>.github.io/multibagger-screener-india/`.
-
-Weekly schedule runs every Saturday 06:00 UTC (after Friday IST close).
-
----
-
-## Honest caveats
-
-- **Screener.in has no formal API.** We scrape public pages politely (sequential, 0.7s delays, browser headers). This works reliably in practice but could break if screener.in changes its HTML structure — parsers are defensive but not bulletproof.
-- **Governance risk isn't fully captured** even with promoter/pledge filters. Auditor changes, related-party transactions, and management background require manual review before acting on any name.
-- **Data quality varies.** Some small caps have missing fields on screener.in (especially newer listings). Strict mode excludes them; permissive mode keeps them with holes.
-- **Multibagger identification is inherently probabilistic.** Even a 10/10 candidate is a research starting point, not a buy signal.
-
----
-
-## Disclaimer
-
-For **educational and research purposes only**. Nothing here is investment
-advice. Indian small caps in particular carry significant governance and
-liquidity risks. You are solely responsible for your investment decisions.
+For research only. Not investment advice.

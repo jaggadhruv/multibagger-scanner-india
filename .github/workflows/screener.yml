@@ -1,29 +1,22 @@
-name: Weekly Multibagger Screener (India)
+name: Weekly Multibagger Shortlist (India)
 
 on:
   schedule:
-    # Every Saturday at 06:00 UTC (after Friday IST close)
+    # Saturdays 06:00 UTC, after Friday's NSE close
     - cron: '0 6 * * 6'
   workflow_dispatch:
     inputs:
       limit:
-        description: 'Limit universe size (blank = full run)'
+        description: 'Only the first N in-scope tickers (blank = all)'
         required: false
         default: ''
-      strict:
-        description: 'Strict mode (missing = fail; default permissive)'
-        required: false
-        type: boolean
-        default: false
-      wait_before_technicals:
-        description: 'Cooldown seconds before technicals fetch'
-        required: false
-        default: '60'
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
+
+concurrency:
+  group: screener
+  cancel-in-progress: false
 
 jobs:
   screen:
@@ -45,19 +38,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Offline self-test
+        continue-on-error: true
+        run: python -m tests.test_offline
+
       - name: Run screener
+        env:
+          LIMIT: ${{ github.event.inputs.limit }}
         run: |
           ARGS=""
-          if [ -n "${{ github.event.inputs.limit }}" ]; then
-            ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
-          fi
-          if [ "${{ github.event.inputs.strict }}" = "true" ]; then
-            ARGS="$ARGS --strict"
-          fi
-          if [ -n "${{ github.event.inputs.wait_before_technicals }}" ]; then
-            ARGS="$ARGS --wait-before-technicals ${{ github.event.inputs.wait_before_technicals }}"
-          fi
+          if [ -n "$LIMIT" ]; then ARGS="$ARGS --limit $LIMIT"; fi
           python main.py $ARGS
+
+      # The picks log lives in data/ and must survive between runs
+      - name: Save data back to the repository
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No data changes to save."
+          else
+            git commit -m "Update screener data (run ${{ github.run_number }})"
+            git pull --rebase --autostash || true
+            git push || echo "Push failed; the next run will save the data."
+          fi
 
       - name: Upload output as artifact
         uses: actions/upload-artifact@v4
@@ -74,4 +80,4 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./output
           keep_files: false
-          commit_message: 'Update India screener report ${{ github.run_number }}'
+          commit_message: 'Update India shortlist ${{ github.run_number }}'

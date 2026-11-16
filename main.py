@@ -1,248 +1,100 @@
 """
-India Multibagger Screener — main entry point.
+India Multibagger Shortlist: main entry point.
 
-Pipeline:
-  1. Universe: NSE Nifty Midcap 150 + Smallcap 250 (~400 tickers)
-  2. Fetch fundamentals from screener.in (sequential, ~5 min)
-  3. Apply filters (India-specific: promoter holding, pledge)
-  4. Compute Multibagger Score (with India weights inc. promoter factor)
-  5. Cooldown (default 60s)
-  6. Fetch technicals via yfinance with .NS suffix
-  7. ALWAYS generates HTML report — even if fetches fail — so GitHub Pages
-     always has something to publish and you can see diagnostics in the browser.
+    python main.py              full run (about 400 screener.in pages, 10-12 minutes)
+    python main.py --sample     12 tickers, quick check that everything works
+    python main.py --limit 60   first 60 in-scope tickers
 
-Usage:
-    python main.py                            # full run: ~10-15 min
-    python main.py --sample                   # quick smoke test (~20 tickers)
-    python main.py --limit 100                # first 100 for iteration
-    python main.py --skip-fundamentals        # reuse cached scored.csv
-    python main.py --skip-technicals          # fundamentals-only report
+Steps
+    1. Universe (Nifty Midcap 150 + Smallcap 250, or input/universe.csv) and industry exclusions
+    2. One screener.in page per company: 4 years of results, balance sheet, cash flow,
+       ROCE, latest quarter, promoter holding
+    3. Business checklist: gate 1 (proven) and gate 2 (inflecting)
+    4. Prices from Yahoo (.NS) for the gate-1 passers only, then gate 3 (chart)
+    5. Tiers, track record, output/index.html and CSV files
 """
 from __future__ import annotations
 import argparse
+import csv
 import sys
-import time
 from pathlib import Path
 
-import pandas as pd
-
-from src.universe import get_universe, get_sample_tickers
-from src.fetch import fetch_fundamentals
-from src.screen import apply_filters
-from src.score import compute_scores
-from src.technicals import fetch_technicals
-from src.report import generate_html_report
+import config as cfg
+from src import fundamentals as fund
+from src.pipeline import finish_run
+from src.universe import SAMPLE, exclusion_reason, get_universe
 
 
-def _cooldown(seconds: int, label: str = "cooldown"):
-    if seconds <= 0:
-        return
-    print(f"\n{label}: waiting {seconds}s to let Yahoo rate limit clear...")
-    remaining = seconds
-    while remaining > 0:
-        step = min(10, remaining)
-        time.sleep(step)
-        remaining -= step
-        if remaining > 0:
-            print(f"  {remaining}s remaining...")
-    print("  done — resuming.")
+def write_raw(pages: dict, path: Path) -> None:
+    """What was read from each page, for checking the parser against the site."""
+    cols = ["ticker", "error", "basis", "name", "industry", "is_financial", "tables_found", "fy_dates", "revenue",
+            "op_income", "net_income", "cfo", "fcf", "roce", "debt_to_equity", "promoter_holding",
+            "promoter_change_pp", "promoter_pledge", "recent_q", "recent_q_growth", "market_cap", "pe"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(cols)
+        for t, p in pages.items():
+            w.writerow([t] + [" | ".join("" if x is None else str(x) for x in v) if isinstance(v, list) else v
+                              for v in (p.get(c) for c in cols[1:])])
 
 
-def _empty_scored(diagnostics: dict) -> pd.DataFrame:
-    """Return an empty DataFrame that still carries diagnostic metadata for the report."""
-    df = pd.DataFrame()
-    df.attrs["diagnostics"] = diagnostics
-    return df
-
-
-def main():
-    p = argparse.ArgumentParser(description="India multibagger stock screener")
-    p.add_argument("--sample", action="store_true")
-    p.add_argument("--limit", type=int, default=None)
-    p.add_argument("--midcap-only", action="store_true")
-    p.add_argument("--smallcap-only", action="store_true")
-    p.add_argument("--strict", action="store_true",
-                   help="Missing values fail filters (default: permissive, missing = pass)")
-    p.add_argument("--top", type=int, default=50)
-    p.add_argument("--output-dir", default="output")
-    p.add_argument("--wait-before-technicals", type=int, default=60)
-    p.add_argument("--skip-fundamentals", action="store_true")
-    p.add_argument("--skip-technicals", action="store_true")
+def main() -> None:
+    p = argparse.ArgumentParser(description="India multibagger shortlist")
+    p.add_argument("--sample", action="store_true", help="12 tickers, for a quick check")
+    p.add_argument("--limit", type=int, default=None, help="only the first N in-scope tickers")
     args = p.parse_args()
+    health = {"warnings": [], "notes": []}
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(exist_ok=True)
-
-    # Diagnostic state that will be shown in the HTML if things go wrong
-    diagnostics = {
-        "universe_size": 0,
-        "fetched_size": 0,
-        "filtered_size": 0,
-        "notes": [],
-    }
-
-    scored = pd.DataFrame()
-
-    if args.skip_fundamentals:
-        cached = output_dir / "scored.csv"
-        if not cached.exists():
-            print(f"WARNING: --skip-fundamentals requires {cached} to exist. "
-                  f"Will generate empty report.")
-            diagnostics["notes"].append(f"--skip-fundamentals used but {cached} missing")
-        else:
-            print("=" * 60)
-            print("STEP 1-4: SKIPPED (loading cached scored.csv)")
-            print("=" * 60)
-            scored = pd.read_csv(cached)
-            print(f"Loaded {len(scored)} cached candidates from {cached}")
-            diagnostics["fetched_size"] = len(scored)
-            diagnostics["universe_size"] = len(scored)
-            diagnostics["filtered_size"] = len(scored)
+    print("=" * 64 + "\nUniverse\n" + "=" * 64)
+    if args.sample:
+        universe, described = list(SAMPLE), "sample of 12 tickers"
     else:
-        # STEP 1: Universe
-        print("=" * 60)
-        print("STEP 1: Building ticker universe")
-        print("=" * 60)
-        try:
-            if args.sample:
-                tickers = get_sample_tickers()
-                print(f"Using sample universe: {len(tickers)} tickers")
-            elif args.midcap_only:
-                tickers = get_universe(include_midcap=True, include_smallcap=False)
-            elif args.smallcap_only:
-                tickers = get_universe(include_midcap=False, include_smallcap=True)
-            else:
-                tickers = get_universe()
-        except Exception as e:
-            print(f"ERROR fetching universe: {e}")
-            tickers = []
-            diagnostics["notes"].append(f"Universe fetch failed: {type(e).__name__}: {e}")
+        universe, described = get_universe()
+    if not universe:
+        print("ERROR: no tickers. The NSE index files could not be read; try again or add input/universe.csv")
+        sys.exit(1)
+    cfg.UNIVERSE_NAME = described
+    if not args.sample and described.startswith("Nifty") and len(universe) < 350:
+        health["warnings"].append(f"Only {len(universe)} tickers were read from NSE (about 400 expected). "
+                                  "One of the two index files probably failed to load.")
 
-        if args.limit:
-            tickers = tickers[: args.limit]
-            print(f"Limited to first {len(tickers)}")
+    in_scope = [m for m in universe if not exclusion_reason(m.get("sector"), "", cfg)]
+    excluded = len(universe) - len(in_scope)
+    if args.limit:
+        in_scope = in_scope[: args.limit]
+    print(f"{len(universe)} tickers, {excluded} outside scope by NSE industry group, {len(in_scope)} to screen")
 
-        diagnostics["universe_size"] = len(tickers)
+    print("\n" + "=" * 64 + "\nscreener.in pages\n" + "=" * 64)
+    pages = fund.scrape_all([m["ticker"] for m in in_scope], cfg)
+    write_raw(pages, Path("output/raw_pages.csv"))
 
-        if not tickers:
-            diagnostics["notes"].append("Universe is empty — check NSE archives access")
-            print("WARNING: No tickers to process. Will generate empty report.")
-        else:
-            # STEP 2: Fetch fundamentals
-            print("\n" + "=" * 60)
-            print("STEP 2: Fetching fundamentals from screener.in")
-            print("=" * 60)
-            try:
-                raw = fetch_fundamentals(tickers)
-                raw.to_csv(output_dir / "raw_data.csv", index=False)
-            except Exception as e:
-                print(f"ERROR during fundamentals fetch: {type(e).__name__}: {e}")
-                diagnostics["notes"].append(f"Fetch crashed: {type(e).__name__}: {e}")
-                raw = pd.DataFrame({"symbol": tickers, "error": [f"crash: {e}"] * len(tickers)})
-                raw.to_csv(output_dir / "raw_data.csv", index=False)
+    cov = fund.coverage(pages)
+    print(f"\nWhat the pages yielded ({cov['usable']} usable of {len(in_scope)}):")
+    for name, count in cov.items():
+        if name != "usable":
+            flag = "   <-- LOW: the parser may not match the site any more" if cov["usable"] and count < 0.5 * cov["usable"] else ""
+            print(f"  {name:24s} {count:4d}{flag}")
+    if cov["usable"] == 0:
+        health["warnings"].append("No screener.in page could be read. If output/debug_response.html exists it shows "
+                                  "what the site returned; the usual cause is the site refusing this machine.")
 
-            fetched = raw[raw["error"].isna()].copy() if "error" in raw.columns else raw
-            diagnostics["fetched_size"] = len(fetched)
-            print(f"Rows with data: {len(fetched)}/{len(raw)}")
+    # Second round of exclusions, from what the pages themselves say
+    records, late = [], 0
+    for meta in in_scope:
+        page = pages.get(meta["ticker"])
+        rec = fund.build_record(meta, page, cfg)
+        if rec["status"] == "ok":
+            if rec.get("is_financial") or exclusion_reason(rec.get("sector"), rec.get("industry"), cfg):
+                late += 1
+                continue
+        records.append(rec)
+    if late:
+        print(f"{late} more excluded after reading their pages (lenders or commodity industries)")
 
-            if len(fetched) == 0:
-                # Collect top error reasons for the diagnostic report
-                if "error" in raw.columns:
-                    errs = raw["error"].value_counts().head(3)
-                    for err, count in errs.items():
-                        diagnostics["notes"].append(f"({count}x) {str(err)[:200]}")
-                diagnostics["notes"].append(
-                    "Zero successful fetches from screener.in — likely IP block. "
-                    "Inspect output/debug_response.html (if present) for the blocked response."
-                )
-                print("WARNING: Zero successful fetches. Report will be empty (diagnostic only).")
-            else:
-                # STEP 3: Filter
-                print("\n" + "=" * 60)
-                print("STEP 3: Applying filters")
-                print("=" * 60)
-                try:
-                    filtered = apply_filters(fetched, strict=args.strict)
-                    filtered.to_csv(output_dir / "filtered.csv", index=False)
-                    diagnostics["filtered_size"] = len(filtered)
-                except Exception as e:
-                    print(f"ERROR during filtering: {e}")
-                    diagnostics["notes"].append(f"Filter crashed: {e}")
-                    filtered = pd.DataFrame()
-
-                if len(filtered) == 0:
-                    diagnostics["notes"].append(
-                        "Zero candidates passed filters. "
-                        "Filter is already permissive; likely some parsers broken. "
-                        "Run `python diagnose.py` to see field coverage."
-                    )
-                    print("WARNING: No candidates passed filters. Report will be empty.")
-                else:
-                    # STEP 4: Score
-                    print("\n" + "=" * 60)
-                    print("STEP 4: Fundamental scoring")
-                    print("=" * 60)
-                    try:
-                        scored = compute_scores(filtered)
-                        scored.to_csv(output_dir / "scored.csv", index=False)
-                        print(f"Scored {len(scored)} candidates → {output_dir/'scored.csv'}")
-                    except Exception as e:
-                        print(f"ERROR during scoring: {e}")
-                        diagnostics["notes"].append(f"Scoring crashed: {e}")
-
-    # STEP 5: Technicals (only if we have candidates)
-    if not args.skip_technicals and len(scored) > 0 and "symbol" in scored.columns:
-        _cooldown(args.wait_before_technicals, label="Cooldown before technicals fetch")
-
-        print("\n" + "=" * 60)
-        print("STEP 5: Technical analysis (yfinance .NS, sequential)")
-        print("=" * 60)
-        try:
-            technicals = fetch_technicals(scored["symbol"].tolist())
-            technicals.to_csv(output_dir / "technicals.csv", index=False)
-            scored = scored.merge(technicals, on="symbol", how="left", suffixes=("", "_tech"))
-            scored.to_csv(output_dir / "final.csv", index=False)
-
-            if "technical_score" not in scored.columns or scored["technical_score"].isna().all():
-                msg = "technical_score is empty — check technicals.csv for the cause"
-                print(f"WARNING: {msg}")
-                diagnostics["notes"].append(msg)
-        except Exception as e:
-            print(f"ERROR during technicals: {type(e).__name__}: {e}")
-            diagnostics["notes"].append(f"Technicals crashed: {type(e).__name__}: {e}")
-    elif len(scored) == 0:
-        print("\nSTEP 5: SKIPPED (no candidates to fetch technicals for).")
-    else:
-        print("\nSTEP 5: SKIPPED (--skip-technicals).")
-
-    # Console preview
-    if len(scored) > 0:
-        print("\nTop 10:")
-        preview_cols = ["symbol", "name", "market_cap_cr", "multibagger_score",
-                        "technical_score", "supertrend_weekly_signal",
-                        "supertrend_daily_signal", "promoter_holding", "promoter_pledge",
-                        "roe", "roce", "rationale"]
-        preview_cols = [c for c in preview_cols if c in scored.columns]
-        with pd.option_context("display.max_columns", None, "display.width", 280,
-                                "display.max_colwidth", 45):
-            print(scored[preview_cols].head(10).to_string(index=False))
-
-    # STEP 6: Report — ALWAYS runs, even with 0 rows
-    print("\n" + "=" * 60)
-    print("STEP 6: Generating HTML report")
-    print("=" * 60)
-    scored.attrs["diagnostics"] = diagnostics
-    report_path = generate_html_report(
-        scored_df=scored,
-        universe_size=diagnostics["universe_size"],
-        fetched_size=diagnostics["fetched_size"],
-        output_path=output_dir / "index.html",
-        top_n=args.top,
-        diagnostics=diagnostics,
-    )
-    print(f"\nDone. Report at: file://{report_path.resolve()}")
-    # Exit 0 always — report exists, Pages deploy should proceed.
-    sys.exit(0)
+    counts = {"universe": len(universe), "in_scope": len(in_scope) - late}
+    finish_run(cfg, records, counts, health)
+    print("\nDone. Open output/index.html")
 
 
 if __name__ == "__main__":

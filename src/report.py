@@ -1,332 +1,308 @@
 """
-HTML report — India edition.
+HTML report. One self-contained page, no JavaScript, no external files.
 
-Same layout as US screener but:
-  * Currency: ₹ instead of $
-  * Market cap: "Cr" (crores) not "B" (billions)
-  * Ticker link → screener.in (India's most popular research site)
-  * Extra columns: Promoter %, Pledge % (India-specific signals)
+Layout, top to bottom:
+    summary line and any data warnings
+    A  Actionable now      one card per stock, full 12-point checklist
+    B  Watchlist           business qualifies, chart not ready
+    C  Bench (collapsed)   proven business, not inflecting
+    funnel                 how many stocks survive each step
+    track record           how earlier tier A picks have done against the index
+    method                 every threshold in use, read from config.py
 """
 from __future__ import annotations
-from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 
-import pandas as pd
+from src.checklist import GATE_NAMES, num
 
-
-HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>India Multibagger Screener — {ts_short}</title>
-<link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
-<style>
-  :root {{
-    --bg: #fafbfc; --card: #ffffff; --border: #e1e4e8;
-    --text: #24292e; --muted: #6a737d; --accent: #ff6b00;
-    --good: #22863a; --warn: #b08800; --bad: #cb2431;
-  }}
-  * {{ box-sizing: border-box; }}
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: var(--bg); color: var(--text);
-    margin: 0 auto; padding: 24px; max-width: 1900px;
-  }}
-  header {{ margin-bottom: 24px; }}
-  h1 {{ margin: 0 0 4px; font-size: 24px; }}
-  .flag {{ display: inline-block; padding: 2px 8px; background: #ff9933; color: #fff;
-           border-radius: 3px; font-size: 12px; margin-right: 8px; vertical-align: middle; }}
-  .meta {{ color: var(--muted); font-size: 13px; }}
-  .cards {{
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 12px; margin: 20px 0;
-  }}
-  .card {{
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 6px; padding: 12px 16px;
-  }}
-  .card .label {{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }}
-  .card .value {{ font-size: 22px; font-weight: 600; margin-top: 4px; }}
-  .criteria {{
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 6px; padding: 14px 18px; margin-bottom: 20px; font-size: 13px;
-    line-height: 1.6;
-  }}
-  .criteria strong {{ color: var(--accent); }}
-  table.dataTable {{
-    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
-    font-size: 12.5px; width: 100% !important;
-  }}
-  table.dataTable thead th {{
-    background: #f6f8fa; border-bottom: 2px solid var(--border);
-    padding: 10px 8px; font-weight: 600; color: var(--text);
-  }}
-  table.dataTable tbody td {{ padding: 8px; border-bottom: 1px solid #eef1f4; vertical-align: top; }}
-  table.dataTable tbody tr:hover {{ background: #f6f8fa; }}
-  .rank {{ font-weight: 600; color: var(--muted); text-align: center; }}
-  .ticker a {{ color: var(--accent); text-decoration: none; font-weight: 600; }}
-  .ticker a:hover {{ text-decoration: underline; }}
-  .rationale {{ font-size: 12px; color: #444; max-width: 340px; line-height: 1.4; }}
-  .pos {{ color: var(--good); }}
-  .neg {{ color: var(--bad); }}
-
-  .score-badge {{
-    display: inline-block; min-width: 40px; padding: 4px 8px;
-    border-radius: 12px; font-weight: 700; font-size: 13px;
-    text-align: center; color: white;
-  }}
-  .mb-elite    {{ background: #22863a; }}
-  .mb-strong   {{ background: #2f9e5c; }}
-  .mb-good     {{ background: #7cb342; color: #1a3d0a; }}
-  .mb-fair     {{ background: #f0c040; color: #4a3800; }}
-  .mb-marginal {{ background: #e0a040; color: #4a2800; }}
-  .tech-great  {{ background: #22863a; }}
-  .tech-good   {{ background: #7cb342; color: #1a3d0a; }}
-  .tech-neutral{{ background: #f0c040; color: #4a3800; }}
-  .tech-weak   {{ background: #e0a040; color: #4a2800; }}
-  .tech-bad    {{ background: var(--bad); }}
-
-  .signal {{
-    display: inline-block; padding: 3px 10px; border-radius: 4px;
-    font-weight: 700; font-size: 12px; letter-spacing: 0.5px;
-  }}
-  .signal-buy  {{ background: #d4edda; color: #155724; border: 1px solid #22863a; }}
-  .signal-sell {{ background: #f8d7da; color: #721c24; border: 1px solid var(--bad); }}
-  .signal-days {{ display: block; font-size: 10px; color: var(--muted); margin-top: 2px; font-weight: 400; }}
-
-  .pledge-bad  {{ color: var(--bad); font-weight: 600; }}
-  .pledge-warn {{ color: var(--warn); font-weight: 500; }}
-  .pledge-ok   {{ color: var(--good); }}
-
-  footer {{
-    margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border);
-    color: var(--muted); font-size: 12px;
-  }}
-  footer .disclaimer {{
-    background: #fff8e1; border-left: 3px solid var(--warn);
-    padding: 10px 14px; margin: 12px 0; color: #5c4a00;
-  }}
-</style>
-</head>
-<body>
-<header>
-  <h1><span class="flag">🇮🇳 India</span>Multibagger Candidate Screener</h1>
-  <div class="meta">Generated {ts} · Fundamentals: screener.in · Prices: Yahoo Finance (.NS)</div>
-</header>
-
-<div class="cards">
-  <div class="card"><div class="label">Universe scanned</div><div class="value">{universe:,}</div></div>
-  <div class="card"><div class="label">Data fetched</div><div class="value">{fetched:,}</div></div>
-  <div class="card"><div class="label">Passed filters</div><div class="value">{n_pass:,}</div></div>
-  <div class="card"><div class="label">Shown in table</div><div class="value">{n_show:,}</div></div>
-</div>
-
-<div class="criteria">
-<strong>Universe</strong>: Nifty Midcap 150 + Nifty Smallcap 250 (~400 tickers).<br>
-<strong>Hard filters</strong>: Market cap ₹1,000–40,000 Cr · ROE ≥15% · ROCE ≥15% · OPM ≥10% · 5y sales/profit growth ≥10% · D/E ≤1.0 · Promoter holding ≥30% · Promoter pledge ≤10%.<br>
-<strong>Multibagger Score (0-10, fundamental)</strong>: Quality (30%) + Health (25%) + Growth (20%) + <em>Promoter (15%)</em> + Valuation (10%). The Promoter factor is India-specific: high stable promoter holding + low pledge is the single best positive governance signal.<br>
-<strong>Technical Score (0-10)</strong>: RSI 40-60 sweet spot + 5-20% above 200MA + 10-25% pullback from 52w high. Higher = better entry point.<br>
-<strong>Supertrend (ATR period=10, mult=2.5)</strong>: <span class="signal signal-buy">BUY</span> = price above trend line; <span class="signal signal-sell">SELL</span> = price below.<br>
-&nbsp;&nbsp;&nbsp;&nbsp;• <strong>ST Weekly</strong> — long-term trend (primary signal for multibagger holds)<br>
-&nbsp;&nbsp;&nbsp;&nbsp;• <strong>ST Daily</strong> — short-term signal (entry-timing color)
-</div>
-
-{table}
-
-<footer>
-  <div class="disclaimer">
-    <strong>Not investment advice.</strong> This screener is a candidate generator, not a buy list. Indian small caps in particular carry governance risks that no fundamental screen can fully capture — always cross-check auditor changes, related-party transactions, and management background before acting on any name. Data quality from screener.in is generally excellent but not guaranteed.
-  </div>
-  <div>Fundamentals: screener.in · Prices: Yahoo Finance · Universe: NSE Nifty indices</div>
-</footer>
-
-<script>
-$(document).ready(function() {{
-    $('#results').DataTable({{
-        pageLength: 25,
-        order: [[0, 'asc']],
-        columnDefs: [
-            {{ targets: 0, className: 'rank' }},
-            {{ targets: -1, className: 'rationale' }},
-        ]
-    }});
-}});
-</script>
-</body>
-</html>
+CSS = """
+:root{--bg:#f7f6f2;--card:#fff;--ink:#1d2127;--muted:#69707a;--line:#e3e1da;--accent:#2f5d8a;
+--good:#2e7d4f;--good-bg:#e7f3ec;--bad:#b3423a;--bad-bg:#f8e9e7;--warn:#8a6100;--warn-bg:#fbf1d6;--chip:#eeede8}
+@media (prefers-color-scheme:dark){:root{--bg:#15171a;--card:#1d2024;--ink:#e6e7e9;--muted:#9aa1ab;--line:#2c3036;
+--accent:#8db7df;--good:#6fc391;--good-bg:#1c2e24;--bad:#e58a82;--bad-bg:#33201e;--warn:#e0bb5c;--warn-bg:#322a14;--chip:#272a2f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:28px 16px 48px}
+h1{font-size:24px;margin:0 0 2px}
+h2{font-size:17px;margin:34px 0 4px}
+.sub{color:var(--muted);font-size:13px;margin:0 0 10px}
+.num,td.n{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0 6px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+.tile b{display:block;font-size:22px}
+.tile span{font-size:12px;color:var(--muted)}
+.banner{border-radius:8px;padding:10px 14px;margin:12px 0;font-size:14px}
+.banner.warn{background:var(--warn-bg);color:var(--warn)}
+.banner.note{background:var(--chip);color:var(--muted)}
+.banner ul{margin:4px 0 0 18px;padding:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:12px 0}
+.card .head{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px}
+.tk{font-size:19px;font-weight:700}
+.nm{color:var(--muted)}
+.badge{font-size:12px;font-weight:600;border-radius:999px;padding:2px 10px;background:var(--chip)}
+.badge.em{background:var(--good-bg);color:var(--good)}
+.badge.es{background:var(--chip);color:var(--accent)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px 16px;margin:12px 0 4px}
+.stats div span{display:block;font-size:11.5px;color:var(--muted)}
+.stats div b{font-size:15.5px}
+.gates{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px 22px;margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
+.gates h4{margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.it{font-size:13px;margin:3px 0;padding-left:20px;position:relative}
+.it:before{position:absolute;left:0;font-weight:700}
+.it.y:before{content:"\\2713";color:var(--good)}
+.it.x:before{content:"\\2717";color:var(--bad)}
+.it.u:before{content:"?";color:var(--warn)}
+.it small{display:block;color:var(--muted)}
+.flags{margin-top:8px;font-size:13px;color:var(--warn)}
+.tablewrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;margin:10px 0}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.n{text-align:right;white-space:nowrap}
+.pos{color:var(--good)}.neg{color:var(--bad)}
+.empty{background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:16px 18px;color:var(--muted)}
+details{margin:10px 0}summary{cursor:pointer;font-weight:600}
+.bar{display:inline-block;height:8px;background:var(--accent);border-radius:4px;vertical-align:middle;opacity:.7}
+.method{list-style:none;padding-left:4px;margin:4px 0 12px}.method li{margin:3px 0}
+footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted)}
 """
 
 
-# ------------------------------------------------------------------ #
-# Formatters (India-flavoured)
-# ------------------------------------------------------------------ #
-
-def _fmt_cr(x):
-    """Market cap in Crores. e.g. 12345.6 → '₹12,346 Cr'"""
-    if pd.isna(x): return "—"
-    return f"₹{x:,.0f} Cr"
+def _pct(x, signed=False, digits=0):
+    x = num(x)
+    if x is None:
+        return "n/a"
+    return f"{x:+.{digits}f}%" if signed else f"{x:.{digits}f}%"
 
 
-def _fmt_pct(x):
-    """Screener values already in % form (15.0 means 15%)."""
-    if pd.isna(x): return "—"
-    cls = "pos" if x >= 0 else "neg"
-    return f'<span class="{cls}">{x:.1f}%</span>'
+def _signed_span(x, digits=0):
+    v = num(x)
+    if v is None:
+        return "n/a"
+    return f'<span class="{"pos" if v >= 0 else "neg"}">{v:+.{digits}f}%</span>'
 
 
-def _fmt_pct_signed(x):
-    """For signed values like distance from MA."""
-    if pd.isna(x): return "—"
-    cls = "pos" if x >= 0 else "neg"
-    return f'<span class="{cls}">{x:+.1f}%</span>'
+def _pts(x):
+    v = num(x)
+    return "n/a" if v is None else f"{v:+.1f} pts"
 
 
-def _fmt_ratio(x):
-    if pd.isna(x): return "—"
-    return f"{x:.2f}"
+def _cap(x, cfg):
+    x = num(x)
+    if x is None:
+        return "n/a"
+    if cfg.CAP_UNIT == "crore":
+        return f"₹{x:,.0f} Cr"
+    return f"${x / 1e9:.1f}B" if x >= 1e9 else f"${x / 1e6:.0f}M"
 
 
-def _fmt_rsi(x):
-    if pd.isna(x): return "—"
-    if 40 <= x <= 60:      cls = "pos"
-    elif 30 <= x < 40 or 60 < x <= 70:  cls = ""
-    else:                  cls = "neg"
-    return f'<span class="{cls}">{x:.0f}</span>'
+def _link(row, cfg):
+    url = cfg.TICKER_URL.format(ticker=row["ticker"])
+    return f'<a href="{escape(url)}" target="_blank" rel="noopener">{escape(row["ticker"])}</a>'
 
 
-def _fmt_pledge(x):
-    """Pledge %: 0 is great, <5 fine, 5-20 warn, >20 red flag."""
-    if pd.isna(x): return "—"
-    if x <= 0.5:   return f'<span class="pledge-ok">{x:.1f}%</span>'
-    if x <= 10:    return f'<span class="pledge-warn">{x:.1f}%</span>'
-    return f'<span class="pledge-bad">{x:.1f}%</span>'
+def _item_html(it):
+    cls = "y" if it["ok"] is True else ("x" if it["ok"] is False else "u")
+    detail = it["detail"] if it["ok"] is not None else f"no data: {it['detail']}"
+    return f'<div class="it {cls}">{escape(it["label"])}<small>{escape(str(detail))}</small></div>'
 
 
-def _screener_link(symbol):
-    """Link to screener.in company page."""
-    return f'<span class="ticker"><a href="https://www.screener.in/company/{symbol}/" target="_blank" rel="noopener">{symbol}</a></span>'
+def _card(row, cfg):
+    m, c = row.get("metrics") or {}, row.get("chart") or {}
+    stage = row.get("stage", "")
+    badge_cls = "em" if stage.startswith("Emerging") else "es"
+    meta = " · ".join(x for x in [row.get("industry") or row.get("sector") or "", _cap(row.get("market_cap"), cfg),
+                                  f"P/E {num(row.get('pe')):.0f}" if num(row.get("pe")) else "",
+                                  f"latest year ends {row['fy_end']}" if row.get("fy_end") else ""] if x)
+    margin = f"{_pct(m.get('margin_latest'), digits=1)} <span class='nm'>(was {_pct(m.get('margin_3y_ago'), digits=1)})</span>"
+    stats = [
+        ("Revenue growth, 3 years", f"{_pct(m.get('rev_cagr_3y'))} a year"),
+        (cfg.ROC_LABEL, _pct(m.get("roc_avg_3y"))),
+        ("Operating margin", margin),
+        ("Against the index, 6 months", _signed_span(c.get("rs_6m"))),
+        ("Below 52-week high", _pct(c.get("pct_from_high"))),
+        ("Price", f"{cfg.CURRENCY}{num(c.get('close')):,.2f}" if num(c.get("close")) else "n/a"),
+    ]
+    stats_html = "".join(f"<div><span>{escape(k)}</span><b class='num'>{v}</b></div>" for k, v in stats)
+    gates_html = ""
+    for g in (1, 2, 3):
+        items = "".join(_item_html(i) for i in row["items"] if i["gate"] == g)
+        gates_html += f"<div><h4>Gate {g} · {escape(GATE_NAMES[g])}</h4>{items}</div>"
+    flags = row.get("flags") or []
+    flags_html = f'<div class="flags">Caution: {escape("; ".join(flags))}</div>' if flags else ""
+    return (f'<div class="card"><div class="head"><span class="tk">{_link(row, cfg)}</span>'
+            f'<span>{escape(row.get("name") or "")}</span><span class="badge {badge_cls}">{escape(stage)}</span>'
+            f'<span class="badge num">{row.get("score", 0)}/12</span></div>'
+            f'<div class="sub">{escape(meta)}</div><div class="stats">{stats_html}</div>'
+            f'<div class="gates">{gates_html}</div>{flags_html}</div>')
 
 
-def _mb_badge(score):
-    if pd.isna(score): return "—"
-    if score >= 9.0:   cls = "mb-elite"
-    elif score >= 8.0: cls = "mb-strong"
-    elif score >= 7.0: cls = "mb-good"
-    elif score >= 6.0: cls = "mb-fair"
-    else:              cls = "mb-marginal"
-    return f'<span class="score-badge {cls}" data-order="{score}">{score:.1f}</span>'
+def _missing(row, gate):
+    parts = []
+    for it in row["items"]:
+        if it["gate"] == gate and it["ok"] is not True:
+            parts.append(f"<b>{escape(it['label'])}</b>: {escape(str(it['detail']))}")
+    return "<br>".join(parts) or "n/a"
 
 
-def _tech_badge(score):
-    if pd.isna(score): return "—"
-    if score >= 8.0:   cls = "tech-great"
-    elif score >= 6.5: cls = "tech-good"
-    elif score >= 5.0: cls = "tech-neutral"
-    elif score >= 3.5: cls = "tech-weak"
-    else:              cls = "tech-bad"
-    return f'<span class="score-badge {cls}" data-order="{score}">{score:.1f}</span>'
+def _table(rows, cfg, gate, why_title):
+    head = ("<tr><th>Ticker</th><th>Company</th><th>Mkt cap</th><th>Growth 3y</th>"
+            f"<th>{escape(cfg.ROC_SHORT)}</th><th>Op margin</th><th>Chart</th><th>{escape(why_title)}</th></tr>")
+    body = ""
+    for r in rows:
+        m = r.get("metrics") or {}
+        body += (f"<tr><td><b>{_link(r, cfg)}</b></td><td>{escape(r.get('name') or '')}<br>"
+                 f"<span class='nm'>{escape(r.get('industry') or r.get('sector') or '')}</span></td>"
+                 f"<td class='n'>{_cap(r.get('market_cap'), cfg)}</td>"
+                 f"<td class='n'>{_pct(m.get('rev_cagr_3y'))}</td><td class='n'>{_pct(m.get('roc_avg_3y'))}</td>"
+                 f"<td class='n'>{_pct(m.get('margin_latest'), digits=1)}<br><span class='nm'>{_pts(m.get('margin_change_pp'))}</span></td>"
+                 f"<td>{escape(r.get('stage') or '')}</td><td>{_missing(r, gate)}</td></tr>")
+    return f'<div class="tablewrap"><table>{head}{body}</table></div>'
 
 
-def _supertrend_badge(signal, bars, unit="d"):
-    if pd.isna(signal) or signal is None: return "—"
-    cls = "signal-buy" if signal == "BUY" else "signal-sell"
-    bars_str = f'<span class="signal-days">{int(bars)}{unit}</span>' if pd.notna(bars) else ""
-    return f'<span class="signal {cls}" data-order="{signal}">{signal}</span>{bars_str}'
+def _funnel(funnel):
+    top = max((n for _, n in funnel if isinstance(n, (int, float))), default=1) or 1
+    rows = ""
+    for label, n in funnel:
+        width = max(2, int(220 * n / top)) if n else 2
+        rows += f"<tr><td>{escape(label)}</td><td class='n'>{n:,}</td><td><span class='bar' style='width:{width}px'></span></td></tr>"
+    return f'<div class="tablewrap"><table><tr><th>Step</th><th>Stocks left</th><th></th></tr>{rows}</table></div>'
 
 
-# ------------------------------------------------------------------ #
-# Main entry
-# ------------------------------------------------------------------ #
-
-def generate_html_report(
-    scored_df: pd.DataFrame,
-    universe_size: int,
-    fetched_size: int,
-    output_path: str | Path,
-    top_n: int = 50,
-    diagnostics: dict | None = None,
-) -> Path:
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    n_pass = len(scored_df)
-    top = scored_df.head(top_n).copy()
-    n_rows = len(top)
-
-    # ------------- EMPTY STATE: show diagnostic message instead of table -------------
-    if n_rows == 0:
-        notes = (diagnostics or {}).get("notes", []) if diagnostics else []
-        notes_html = ""
-        if notes:
-            items = "".join(f"<li>{n}</li>" for n in notes)
-            notes_html = f"""
-            <div class="empty-diag" style="background:#fff;border:1px solid #e1e4e8;border-radius:6px;padding:24px;margin:20px 0;">
-                <h2 style="margin-top:0;color:#cb2431;">⚠️ No candidates to display</h2>
-                <p><strong>What happened:</strong></p>
-                <ul>{items}</ul>
-                <p><strong>Next steps to diagnose:</strong></p>
-                <ol>
-                  <li>Download this run's artifact from the GitHub Actions run — contains <code>raw_data.csv</code> with per-ticker <code>error</code> column showing exactly why each fetch failed.</li>
-                  <li>Look for <code>debug_response.html</code> in the artifact — the first blocked response is saved there. If it's a Cloudflare/bot challenge page, screener.in is blocking the GitHub Actions runner IP.</li>
-                  <li>If IP blocking is confirmed: run <code>python main.py</code> locally (from a residential IP), commit the resulting <code>output/scored.csv</code>, then have Actions run with <code>--skip-fundamentals</code> to just do technicals + report.</li>
-                  <li>If parsers came up empty but got valid HTML: screener.in may have changed page structure — update the CSS selectors in <code>src/fetch.py</code>.</li>
-                </ol>
-            </div>
-            """
-        table_html = notes_html or '<div class="empty-diag" style="padding:24px;text-align:center;color:#6a737d;"><h2>No data available for this run.</h2><p>Check GitHub Actions logs for details.</p></div>'
+def _track(track, cfg):
+    if not track or not track.get("rows"):
+        return ('<div class="empty">No tier A picks logged yet. Each pick is logged the first time it appears, '
+                'then measured against the index on every later run.</div>')
+    s = track["summary"]
+    if s["measured"]:
+        line = (f"{s['measured']} pick(s) at least 4 weeks old: average return {_pct(s['avg_return'], signed=True, digits=1)}, "
+                f"average {_pct(s['avg_excess'], signed=True, digits=1)} against the {escape(cfg.BENCHMARK_NAME)}, "
+                f"{s['beat_index']} of {s['measured']} ahead of the index.")
+        if s["measured"] < 20:
+            line += " Too few picks to draw a conclusion yet."
     else:
-        # ------------- NORMAL PATH: build the table -------------
-        _none = pd.Series([None] * n_rows, index=top.index)
+        line = "No pick is 4 weeks old yet, so there is nothing to measure."
+    body = ""
+    for r in track["rows"]:
+        then, now = num(r.get("price_then") or r.get("price_at_flag")), num(r.get("price_now"))
+        body += (f"<tr><td><b>{escape(r['ticker'])}</b></td><td>{escape(r.get('name') or '')}</td>"
+                 f"<td class='n'>{escape(str(r['first_flagged']))}</td>"
+                 f"<td class='n'>{f'{then:,.2f}' if then else 'n/a'}</td><td class='n'>{f'{now:,.2f}' if now else 'n/a'}</td>"
+                 f"<td class='n'>{_signed_span(r.get('return_pct'), 1)}</td><td class='n'>{_signed_span(r.get('index_return_pct'), 1)}</td>"
+                 f"<td class='n'>{_signed_span(r.get('excess_pct'), 1)}</td><td class='n'>{escape(str(r.get('last_flagged', '')))}</td></tr>")
+    head = ("<tr><th>Ticker</th><th>Company</th><th>First picked</th><th>Price then</th><th>Price now</th>"
+            "<th>Return</th><th>Index</th><th>Difference</th><th>Last in tier A</th></tr>")
+    return f'<p class="sub">{line}</p><div class="tablewrap"><table>{head}{body}</table></div>'
 
-        def _col(name):
-            return top.get(name, _none)
 
-        display = pd.DataFrame({
-            "Rank":         range(1, n_rows + 1),
-            "Symbol":       top["symbol"].apply(_screener_link),
-            "Name":         _col("name").fillna("").astype(str).str.slice(0, 30),
-            "Mkt Cap":      top["market_cap_cr"].apply(_fmt_cr),
-            "MB /10":       top["multibagger_score"].apply(_mb_badge),
-            "Tech /10":     _col("technical_score").apply(_tech_badge),
-            "ST Weekly":    [_supertrend_badge(s, w, "w") for s, w in
-                             zip(_col("supertrend_weekly_signal"), _col("supertrend_weekly_weeks"))],
-            "ST Daily":     [_supertrend_badge(s, d, "d") for s, d in
-                             zip(_col("supertrend_daily_signal"), _col("supertrend_daily_days"))],
-            "Promoter":     _col("promoter_holding").apply(_fmt_pct),
-            "Pledge":       _col("promoter_pledge").apply(_fmt_pledge),
-            "ROE":          _col("roe").apply(_fmt_pct),
-            "ROCE":         _col("roce").apply(_fmt_pct),
-            "5y Sales":     _col("sales_growth_5y").apply(_fmt_pct),
-            "5y Profit":    _col("profit_growth_5y").apply(_fmt_pct),
-            "D/E":          _col("debt_to_equity").apply(_fmt_ratio),
-            "P/E":          _col("pe_ratio").apply(_fmt_ratio),
-            "RSI":          _col("rsi_14").apply(_fmt_rsi),
-            "vs 200MA":     _col("pct_from_200ma").apply(_fmt_pct_signed),
-            "Rationale":    _col("rationale").fillna("—"),
-        })
+def _method(cfg):
+    g1 = [
+        f"Revenue growth of at least {cfg.REV_CAGR_MIN:.0f}% a year over 3 years",
+        "Revenue higher in each of the last 3 years",
+        f"{cfg.ROC_LABEL} of at least {cfg.ROC_MIN:.0f}%, averaged over 3 years",
+        f"{cfg.CASH_LABEL} positive in at least {cfg.CASH_POSITIVE_YEARS_MIN} of the last 4 years",
+        f"{cfg.CASH_LABEL} of at least {cfg.CASH_CONVERSION_MIN:.0f}% of net profit over 3 years",
+        cfg.METHOD_ITEM_6,
+        cfg.METHOD_ITEM_7,
+    ]
+    g2 = [
+        f"Operating margin at least {cfg.MARGIN_EXPANSION_MIN_PP:g} percentage point(s) above 3 years ago, and not down "
+        f"more than {cfg.MARGIN_RECENT_DIP_MAX_PP:g} on last year",
+        f"Latest-year growth of at least {cfg.GROWTH_NOW_MIN:.0f}% and at least {cfg.GROWTH_FADE_RATIO * 100:.0f}% of the 3-year pace; "
+        f"latest quarter up at least {cfg.RECENT_QUARTER_GROWTH_MIN:.0f}% on a year ago when that figure is available",
+    ]
+    g3 = [
+        "Weekly Supertrend (ATR 10, multiplier 2.5) on BUY",
+        f"Emerging (BUY for {cfg.FRESH_FLIP_WEEKS} weeks or less): price above the 200-day average. "
+        f"Established: price above a rising 200-day average and within {cfg.NEAR_HIGH_MAX_PCT:.0f}% of the 52-week high",
+        f"Emerging: ahead of the {cfg.BENCHMARK_NAME} over 3 months. Established: ahead over both 6 and 12 months",
+    ]
+    out, n = "", 0
+    for g, lines in ((1, g1), (2, g2), (3, g3)):
+        lis = ""
+        for line in lines:
+            n += 1
+            lis += f"<li><b>{n}.</b> {escape(line)}</li>"
+        out += f"<p><b>Gate {g} · {escape(GATE_NAMES[g])}</b></p><ul class='method'>{lis}</ul>"
+    return out
 
-        table_html = display.to_html(
-            table_id="results",
-            classes="display compact",
-            index=False,
-            escape=False,
-            border=0,
-        )
 
-    now = datetime.now(timezone.utc)
-    html = HTML_TEMPLATE.format(
-        ts=now.strftime("%Y-%m-%d %H:%M UTC"),
-        ts_short=now.strftime("%Y-%m-%d"),
-        universe=universe_size,
-        fetched=fetched_size,
-        n_pass=n_pass,
-        n_show=n_rows,
-        table=table_html,
-    )
+def generate_report(ctx: dict, output_path) -> Path:
+    cfg = ctx["cfg"]
+    rows = ctx["rows"]
+    a = [r for r in rows if r["tier"] == "A"]
+    b = [r for r in rows if r["tier"] == "B"]
+    c = [r for r in rows if r["tier"] == "C"]
+    health = ctx.get("health") or {}
 
-    output_path.write_text(html, encoding="utf-8")
-    print(f"Report written: {output_path.resolve()}")
-    return output_path
+    banners = ""
+    if health.get("warnings"):
+        lis = "".join(f"<li>{escape(w)}</li>" for w in health["warnings"])
+        banners += f'<div class="banner warn"><b>Data warnings for this run</b><ul>{lis}</ul></div>'
+    if health.get("notes"):
+        lis = "".join(f"<li>{escape(w)}</li>" for w in health["notes"])
+        banners += f'<div class="banner note"><ul>{lis}</ul></div>'
+
+    if a:
+        a_html = "".join(_card(r, cfg) for r in a)
+    else:
+        a_html = ('<div class="empty">No stock passes all three gates in this run. The bar is fixed, not relative, '
+                  'so an empty week is a valid result. The watchlist below shows which businesses already qualify '
+                  'and what their charts still lack.</div>')
+    b_html = _table(b, cfg, 3, "What the chart still lacks") if b else \
+        '<div class="empty">No business currently passes gates 1 and 2 with a chart that is not ready.</div>'
+    c_html = _table(c, cfg, 2, "Why it is not inflecting") if c else '<div class="empty">None.</div>'
+
+    tiles = [
+        (len(a), "Actionable now"), (len(b), "Watchlist"), (len(c), "Bench"),
+        (ctx.get("screened", 0), "Stocks screened"),
+    ]
+    tiles_html = "".join(f'<div class="tile"><b class="num">{n:,}</b><span>{escape(t)}</span></div>' for n, t in tiles)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escape(cfg.REPORT_TITLE)}</title><style>{CSS}</style></head><body><div class="wrap">
+<h1>{escape(cfg.REPORT_TITLE)}</h1>
+<p class="sub">Generated {escape(ctx.get("generated", ""))} · {escape(cfg.UNIVERSE_NAME)} · fundamentals: {escape(cfg.FUNDAMENTALS_SOURCE)} · prices: Yahoo Finance</p>
+<div class="tiles">{tiles_html}</div>
+{banners}
+
+<h2>A · Actionable now</h2>
+<p class="sub">Passes all 12 checks: a proven business, still inflecting, with the chart confirming. Ordered by growth plus return on capital.</p>
+{a_html}
+
+<h2>B · Watchlist</h2>
+<p class="sub">The business passes gates 1 and 2. The chart does not confirm yet, so these are names to watch, not to act on.</p>
+{b_html}
+
+<h2>C · Bench</h2>
+<details><summary>{len(c)} proven {"business" if len(c) == 1 else "businesses"} not inflecting right now</summary>
+<p class="sub">Passes gate 1 but not gate 2: growth is fading or margins are not expanding.</p>
+{c_html}</details>
+
+<h2>Where the stocks dropped out</h2>
+<p class="sub">Rows marked "alone" count how many stocks pass that one check by itself; the other rows are cumulative. A check that almost nothing passes is the one to look at in config.py.</p>
+{_funnel(ctx.get("funnel") or [])}
+
+<h2>Track record of earlier picks</h2>
+{_track(ctx.get("track"), cfg)}
+
+<h2>Method</h2>
+<p class="sub">Every check is a fixed yes or no. A check with missing data counts as not met. Thresholds live in config.py.</p>
+{_method(cfg)}
+
+<footer>
+<p><b>Not investment advice.</b> This is a screening tool for research. The checklist has not been validated against
+past returns; the track record above is the only evidence it will ever produce, and it needs months to mean anything.
+Company numbers come from free data sources and can be wrong or out of date, so confirm them in the company's own
+filings before acting. Management quality, governance and fraud risk are not measured here.</p>
+</footer></div></body></html>"""
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(html, encoding="utf-8")
+    print(f"Report written: {path}")
+    return path

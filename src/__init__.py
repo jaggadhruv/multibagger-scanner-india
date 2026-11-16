@@ -1,1 +1,1 @@
-"""India multibagger screener source modules."""
+"""Screener modules."""
